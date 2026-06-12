@@ -100,11 +100,17 @@ const PLATFORM_ACTION = {
   rsya: 'collectYandexAds',
 };
 
-async function collectFromUrl(url, platform) {
-  let tabId;
+async function collectFromUrl(url, platform, reuseTabId) {
+  let tabId = reuseTabId;
   try {
-    const tab = await chrome.tabs.create({ url, active: false });
-    tabId = tab.id;
+    if (tabId) {
+      // Переиспользуем существующую вкладку
+      await chrome.tabs.update(tabId, { url, active: true });
+    } else {
+      // Создаём новую активную вкладку
+      const tab = await chrome.tabs.create({ url, active: true });
+      tabId = tab.id;
+    }
 
     await waitForTabLoad(tabId);
     // SPA — даём React время отрендерить
@@ -118,13 +124,9 @@ async function collectFromUrl(url, platform) {
     if (!response || !response.success) {
       throw new Error(response?.error || 'Content script не вернул данные');
     }
-    return response.data;
+    return { data: response.data, tabId };
   } finally {
-    if (tabId) {
-      try {
-        await chrome.tabs.remove(tabId);
-      } catch (_) {}
-    }
+    // Вкладку НЕ закрываем — оставляем для переиспользования
   }
 }
 
@@ -141,6 +143,7 @@ async function collectAll() {
   let dailyData = await getDailyData();
   const results = [];
   const total = apps.length;
+  let workerTabId = null; // Одна вкладка для всех приложений
 
   await setStatus({ status: 'collecting', current: 0, total });
 
@@ -158,7 +161,8 @@ async function collectAll() {
     });
 
     try {
-      const data = await collectFromUrl(app.url, app.platform);
+      const { data, tabId: usedTabId } = await collectFromUrl(app.url, app.platform, workerTabId);
+      if (usedTabId) workerTabId = usedTabId;
       const metrics = data.metrics || {};
       const effectiveAppId = data.appId || app.appId;
       dailyData = mergeData(dailyData, app.platform, effectiveAppId, metrics);
@@ -171,7 +175,7 @@ async function collectAll() {
     await saveDailyData(dailyData);
   }
 
-  // Готово
+  // Готово — вкладку НЕ закрываем
   chrome.action.setBadgeText({ text: '✓' });
   chrome.action.setBadgeBackgroundColor({ color: '#2ec4b6' });
   setTimeout(() => chrome.action.setBadgeText({ text: '' }), 5000);
@@ -484,13 +488,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
     case 'scanRuStoreApps': {
       (async () => {
-        let tabId;
         try {
+          // Создаём активную вкладку для сканирования
           const tab = await chrome.tabs.create({
             url: 'https://console.rustore.ru/apps',
-            active: false,
+            active: true,
           });
-          tabId = tab.id;
+          const tabId = tab.id;
           await waitForTabLoad(tabId);
           await new Promise((r) => setTimeout(r, 3000));
 
@@ -523,11 +527,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           });
         } catch (e) {
           sendResponse({ success: false, error: e.message });
-        } finally {
-          if (tabId) {
-            try { await chrome.tabs.remove(tabId); } catch (_) {}
-          }
         }
+        // Вкладку НЕ закрываем — оставляем для сбора данных
       })();
       return true;
     }
