@@ -229,8 +229,15 @@
     }
   }
 
+  let _running = false;
+
   chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
-    if (msg.action === 'collectRuStore') { collectData().then(sendResponse); return true; }
+    if (msg.action === 'collectRuStore') {
+      if (_running) { sendResponse({ success: false, error: 'Сбор уже выполняется, подождите' }); return false; }
+      _running = true;
+      collectData().then((res) => { _running = false; sendResponse(res); });
+      return true;
+    }
     if (msg.action === 'ping') {
       sendResponse({ alive: true, platform: 'rustore', appId: extractAppId(), url: window.location.href });
       return false;
