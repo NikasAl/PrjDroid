@@ -198,43 +198,18 @@
       result.metrics.views = parseTableData(panelAt(0));
       log('1-parsed', result.metrics.views);
 
-      // Запоминаем «Всего» из просмотров чтобы потом сравнить
-      const viewsTotal = vCells[9] || '';
-
       // ── 2. Установки (панель 1) ──
+      // RuStore обновляет данные in-place: тот же <table>, меняется textContent ячеек.
+      // Polling ненадёжен — во время загрузки таблица временно меняет структуру.
+      // Используем фиксированную задержку: clickTab(3с) + здесь(4с) + ensureTable(3с) = ~10с.
       log('2-clickInst', '');
       await clickTab(SEL.installationsTab);
+      await DELAY(4000);
 
-      // После клика: ждём пока ячейка[9] в панели 1 изменится с viewsTotal.
-      // Каждый тик делаем СВЕЖИЙ запрос panelAt(1) — React может пересоздать элемент.
-      log('2-pollStart', `waiting cell[9] != "${viewsTotal}"`);
-      let dataLoaded = false;
-      for (let i = 0; i < 30; i++) { // 30 × 500мс = 15с максимум
-        await DELAY(500);
-        const cells = readCells(1, 12);
-        log(`2-poll-${i}`, cells);
-        if (cells.length > 9 && cells[9] !== viewsTotal) {
-          dataLoaded = true;
-          log('2-pollDone', `cell[9]="${cells[9]}" (was "${viewsTotal}")`);
-          break;
-        }
-      }
-
-      if (!dataLoaded) {
-        log('2-pollFail', 'Данные не обновились за 15с, пробуем CHARTS→TABLE');
-        const p = panelAt(1);
-        const ch = p?.querySelector('input[value="CHARTS"]');
-        const tb = p?.querySelector('input[value="TABLE"]');
-        if (ch) ch.click();
-        await DELAY(1500);
-        if (tb) tb.click();
-        await DELAY(5000);
-      }
-
-      // Финальное чтение — СВЕЖИЙ запрос панели
+      log('2-ensureTable', '');
       await ensureTable(1);
       const iCells = readCells(1, 15);
-      log('2-finalCells', iCells);
+      log('2-cells', iCells);
       result.metrics.installations = parseTableData(panelAt(1));
       log('2-parsed', result.metrics.installations);
 
