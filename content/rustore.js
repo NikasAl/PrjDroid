@@ -82,7 +82,13 @@
     if (!panel) throw new Error(`Панель ${panelIdx} не найдена`);
     const radio = panel.querySelector('input[value="TABLE"]');
     if (!radio) throw new Error('TABLE radio не найден');
-    if (!radio.checked) radio.click();
+
+    // RuStore копирует checked-состояние radio в неактивные панели,
+    // но реальный режим может быть CHARTS. Проверяем наличие <table>, а не radio.
+    if (!panelAt(panelIdx)?.querySelector('table')) {
+      log('ensureTable', `panel ${panelIdx}: table missing, clicking TABLE radio`);
+      radio.click();
+    }
     await waitFor(() => panelAt(panelIdx)?.querySelector('table') !== null, 10000);
     await DELAY(3000);
   }
@@ -188,6 +194,11 @@
         timestamp: new Date().toISOString(), dateRange: extractDateRange(), metrics: {},
       };
 
+      // ── 0. Предзагрузка: посещаем таб установок, чтобы RuStore загрузил данные ──
+      log('0-preload', 'clicking installations tab to cache data');
+      await clickTab(SEL.installationsTab);
+      await DELAY(5000);
+
       // ── 1. Просмотры (панель 0) ──
       log('1-clickViews', '');
       await clickTab(SEL.viewsTab);
@@ -198,13 +209,10 @@
       result.metrics.views = parseTableData(panelAt(0));
       log('1-parsed', result.metrics.views);
 
-      // ── 2. Установки (панель 1) ──
-      // RuStore обновляет данные in-place: тот же <table>, меняется textContent ячеек.
-      // Polling ненадёжен — во время загрузки таблица временно меняет структуру.
-      // Используем фиксированную задержку: clickTab(3с) + здесь(4с) + ensureTable(3с) = ~10с.
+      // ── 2. Установки (панель 1) — данные уже закешированы ──
       log('2-clickInst', '');
       await clickTab(SEL.installationsTab);
-      await DELAY(4000);
+      await DELAY(2000);
 
       log('2-ensureTable', '');
       await ensureTable(1);
