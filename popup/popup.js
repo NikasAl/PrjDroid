@@ -15,6 +15,7 @@ const el = {
   fAppId: $('#f-appid'),
   fUrl: $('#f-url'),
   btnAdd: $('#btn-add'),
+  btnScanRuStore: $('#btn-scan-rustore'),
   btnSaveApp: $('#btn-save-app'),
   btnCancelAdd: $('#btn-cancel-add'),
   btnCollectAll: $('#btn-collect-all'),
@@ -58,6 +59,7 @@ async function init() {
 
 function bindEvents() {
   el.btnAdd.addEventListener('click', toggleAddForm);
+  el.btnScanRuStore.addEventListener('click', scanRuStoreApps);
   el.btnCancelAdd.addEventListener('click', () => {
     el.addForm.classList.add('hidden');
     clearForm();
@@ -164,6 +166,37 @@ function renderAppList() {
   el.appList.querySelectorAll('[data-remove]').forEach((btn) => {
     btn.addEventListener('click', () => removeApp(btn.dataset.remove));
   });
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Сканирование RuStore
+// ═══════════════════════════════════════════════════════════
+
+async function scanRuStoreApps() {
+  el.btnScanRuStore.disabled = true;
+  el.btnScanRuStore.textContent = 'Загрузка...';
+  showStatus('collecting', 'Открываем RuStore Console...');
+
+  try {
+    const result = await sendMsg('scanRuStoreApps');
+    if (result.success) {
+      apps = result.apps;
+      renderAppList();
+      updateButtons();
+      if (result.added > 0) {
+        showStatus('done', `Найдено ${result.total}, добавлено ${result.added} новых`);
+      } else {
+        showStatus('done', `Найдено ${result.total} приложений — все уже в списке`);
+      }
+    } else {
+      showStatus('error', result.error || 'Ошибка сканирования');
+    }
+  } catch (e) {
+    showStatus('error', e.message);
+  } finally {
+    el.btnScanRuStore.disabled = false;
+    el.btnScanRuStore.textContent = '🔄 Из RuStore';
+  }
 }
 
 // ═══════════════════════════════════════════════════════════

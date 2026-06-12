@@ -481,6 +481,56 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     case 'getStatus':
       getStatus().then(sendResponse);
       return true;
+
+    case 'scanRuStoreApps': {
+      (async () => {
+        let tabId;
+        try {
+          const tab = await chrome.tabs.create({
+            url: 'https://console.rustore.ru/apps',
+            active: false,
+          });
+          tabId = tab.id;
+          await waitForTabLoad(tabId);
+          await new Promise((r) => setTimeout(r, 3000));
+
+          const resp = await sendToTab(tabId, { action: 'scanRuStoreApps' });
+          if (!resp?.success) {
+            sendResponse({ success: false, error: resp?.error || 'Скан не вернул данные' });
+            return;
+          }
+
+          const existing = await getApps();
+          const existingRuStoreIds = new Set(
+            existing.filter((a) => a.platform === 'rustore').map((a) => a.appId)
+          );
+
+          const newApps = resp.apps
+            .filter((a) => !existingRuStoreIds.has(a.appId))
+            .map((a) => ({
+              id: Date.now().toString() + Math.random().toString(36).slice(2, 6),
+              ...a,
+            }));
+
+          const merged = [...existing, ...newApps];
+          await saveApps(merged);
+
+          sendResponse({
+            success: true,
+            added: newApps.length,
+            total: resp.apps.length,
+            apps: merged,
+          });
+        } catch (e) {
+          sendResponse({ success: false, error: e.message });
+        } finally {
+          if (tabId) {
+            try { await chrome.tabs.remove(tabId); } catch (_) {}
+          }
+        }
+      })();
+      return true;
+    }
   }
 });
 
