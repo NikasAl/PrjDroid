@@ -89,35 +89,70 @@
     const isSelected = tab.getAttribute('aria-selected') === 'true';
     if (!isSelected) {
       tab.click();
-      // Ждём пока aria-selected изменится
+      // 1. Ждём, пока aria-selected изменится на кликнутом табе
       await waitFor(
         () => tab.getAttribute('aria-selected') === 'true',
         5000
       );
-    }
 
-    // Ждём, пока React отрендерит содержимое панели
-    // (переключатель CHARTS/TABLE — признак того, что компонент смонтирован)
-    const panel = getActivePanel();
-    if (panel) {
-      try {
-        await waitFor(
-          () => panel.querySelector('input[value="TABLE"]') !== null,
-          10000
-        );
-        await DELAY(400);
-      } catch (e) {
-        throw new Error('Содержимое панели метрики не отрендерилось');
-      }
+      // 2. Ждём, пока переключатель CHARTS/TABLE появится
+      //    в КОНКРЕТНОЙ панели, привязанной к этому табу.
+      //    Не relying на getActivePanel() сразу — ждём через
+      //    повторный вызов, т.к. DOM может обновляться асинхронно.
+      await waitFor(
+        () => {
+          const panel = getActivePanel();
+          return panel && panel.querySelector('input[value="TABLE"]') !== null;
+        },
+        10000
+      );
+
+      // 3. Доп. пауза после появления переключателя —
+      //    React может ещё рендерить содержимое
+      await DELAY(1000);
     }
   }
 
-  // ─── Получить активную (видимую) панель ───
+  // ─── Получить активную (видимую) панель по ассоциации с активным табом ───
+  // RuStore — SPA на React: после клика на таб атрибут hidden обновляется
+  // асинхронно, поэтому надёжнее находить панель через связь tab↔panel.
   function getActivePanel() {
+    const tabs = document.querySelectorAll('[role="tab"]');
     const panels = document.querySelectorAll('[role="tabpanel"]');
+
+    // Стратегия 1: aria-controls на табе → id панели
+    for (const tab of tabs) {
+      if (tab.getAttribute('aria-selected') !== 'true') continue;
+      const controlsId = tab.getAttribute('aria-controls');
+      if (controlsId) {
+        const panel = document.getElementById(controlsId);
+        if (panel) return panel;
+      }
+    }
+
+    // Стратегия 2: id таба → aria-labelledby на панели
+    for (const tab of tabs) {
+      if (tab.getAttribute('aria-selected') !== 'true') continue;
+      const tabId = tab.getAttribute('id');
+      if (tabId) {
+        for (const panel of panels) {
+          if (panel.getAttribute('aria-labelledby') === tabId) return panel;
+        }
+      }
+    }
+
+    // Стратегия 3: по порядковому индексу (tabs[i] ↔ panels[i])
+    const tabArr = Array.from(tabs);
+    const activeIdx = tabArr.findIndex(
+      (t) => t.getAttribute('aria-selected') === 'true'
+    );
+    if (activeIdx >= 0 && activeIdx < panels.length) return panels[activeIdx];
+
+    // Стратегия 4 (fallback): без hidden
     for (const panel of panels) {
       if (!panel.hasAttribute('hidden')) return panel;
     }
+
     return panels[0] || null;
   }
 
@@ -137,20 +172,45 @@
       tableRadio.click();
     }
 
-    // ВСЕГДА ждём появления <table>, даже если radio был checked.
-    // После переключения таба React может перемонтировать панель —
-    // radio «checked» может сохраниться, но <table> ещё не отрендерена.
+    // Ждём появления <table>
     try {
       await waitFor(
         () => panel.querySelector('table') !== null,
         10000
       );
-      await DELAY(300);
     } catch (e) {
       throw new Error(
         'Таблица не появилась после переключения в режим TABLE'
       );
     }
+
+    // ── КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: дождаться, пока таблица будет содержать данные ──
+    // После переключения таба RuStore показывает спиннер загрузки (~1 сек),
+    // затем таблица появляется. Элемент <table> может существовать,
+    // но ячейки ещё пустые. Ждём появления хотя бы одной
+    // дата-подобной ячейки в заголовке или данных.
+    try {
+      await waitFor(
+        () => {
+          const table = panel.querySelector('table');
+          if (!table) return false;
+          const cells = table.querySelectorAll('th, td');
+          if (cells.length < 3) return false;
+          // Проверяем, что есть хотя бы одна дата или строка «Всего»/«Итого»
+          return Array.from(cells).some(
+            (c) => isDateLike(c.textContent.trim())
+          );
+        },
+        10000
+      );
+    } catch (e) {
+      throw new Error(
+        'Таблица появилась, но данные не загрузились (таймаут).'
+      );
+    }
+
+    // Финальная пауза — гарантирует, что React закончил рендер
+    await DELAY(2000);
 
     return panel;
   }
