@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "App Metrics Harvester",
+  "version": "1.0.0",
+  "description": "Извлечение статистики приложений из RuStore, Google Play и Yandex Ads для анализа в LLM",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "tabs",
+    "clipboardWrite"
+  ],
+  "host_permissions": [
+    "*://console.rustore.ru/*",
+    "*://play.google.com/console/*",
+    "*://partner.yandex.ru/*"
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "App Metrics Harvester"
+  },
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://console.rustore.ru/apps/*/statistics*"],
+      "js": ["content/rustore.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://play.google.com/console/*"],
+      "js": ["content/googleplay.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://partner.yandex.ru/*"],
+      "js": ["content/yandex-ads.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
