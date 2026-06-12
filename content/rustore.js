@@ -6,7 +6,7 @@
 
   const DELAY = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  // ─── Логирование: в console + в массив для возврата ───
+  // ─── Логирование ───
   const LOG = [];
   function log(step, detail) {
     const entry = {
@@ -18,29 +18,7 @@
     console.log(`[AMH ${step}]`, detail);
   }
 
-  function snapshotTable(label, panel) {
-    const table = panel?.querySelector('table');
-    if (!table) {
-      log(label, 'table = null');
-      return null;
-    }
-    const cells = Array.from(table.querySelectorAll('td, th')).map(
-      (c) => c.textContent.trim()
-    );
-    const html = table.outerHTML;
-    // Обрезаем HTML для лога (оставляем первые 3000 символов)
-    const shortHtml = html.length > 3000 ? html.slice(0, 3000) + '...[truncated]' : html;
-    const info = {
-      cellsCount: cells.length,
-      rowsCount: table.querySelectorAll('tr').length,
-      first20Cells: cells.slice(0, 20),
-      html: shortHtml,
-    };
-    log(label, info);
-    return info;
-  }
-
-  // ─── Selectors (основаны на data-testid из HTML RuStore) ───
+  // ─── Selectors ───
   const SEL = {
     pageTitle: '[data-testid="advancedAppStatisticsPage-title"]',
     dateRangeTrigger:
@@ -56,20 +34,11 @@
     return new Promise((resolve, reject) => {
       const el = parent.querySelector(selector);
       if (el) return resolve(el);
-
       const observer = new MutationObserver(() => {
         const el = parent.querySelector(selector);
-        if (el) {
-          observer.disconnect();
-          clearTimeout(timer);
-          resolve(el);
-        }
+        if (el) { observer.disconnect(); clearTimeout(timer); resolve(el); }
       });
-      observer.observe(parent.body || parent, {
-        childList: true,
-        subtree: true,
-      });
-
+      observer.observe(parent.body || parent, { childList: true, subtree: true });
       const timer = setTimeout(() => {
         observer.disconnect();
         reject(new Error(`Таймаут ожидания элемента: ${selector}`));
@@ -86,16 +55,12 @@
         reject(new Error('Таймаут waitFor'));
       }, timeoutMs);
       const poller = setInterval(() => {
-        if (checkFn()) {
-          clearTimeout(timer);
-          clearInterval(poller);
-          resolve();
-        }
+        if (checkFn()) { clearTimeout(timer); clearInterval(poller); resolve(); }
       }, intervalMs);
     });
   }
 
-  // ─── Ждём, пока страница статистики RuStore полностью отрендерится (SPA) ───
+  // ─── Страница статистики загрузилась ───
   async function waitForStatsPage() {
     try {
       await waitForElement(SEL.chartsContainer, document, 15000);
@@ -112,125 +77,72 @@
     }
   }
 
+  // ─── Найти панель по индексу таба (tabs[i] ↔ panels[i]) ───
+  // RuStore НЕ использует aria-controls/aria-labelledby/id на панелях,
+  // поэтому единственный надёжный способ — по порядковому индексу.
+  function getPanelByTabIndex(tabIndex) {
+    const panels = document.querySelectorAll('[role="tabpanel"]');
+    return panels[tabIndex] || null;
+  }
+
+  function getActiveTabIndex() {
+    const tabs = document.querySelectorAll('[role="tab"]');
+    const arr = Array.from(tabs);
+    return arr.findIndex((t) => t.getAttribute('aria-selected') === 'true');
+  }
+
   // ─── Нажать на таб метрики ───
   async function clickMetricTab(testId) {
     const tab = document.querySelector(testId);
     if (!tab) throw new Error(`Таб не найден: ${testId}`);
-
-    const isSelected = tab.getAttribute('aria-selected') === 'true';
-    if (!isSelected) {
-      tab.click();
-      await waitFor(
-        () => tab.getAttribute('aria-selected') === 'true',
-        5000
-      );
-      await DELAY(3000);
-    }
-  }
-
-  // ─── Информация обо всех табах и панелях ───
-  function dumpTabsAndPanels() {
-    const tabs = Array.from(document.querySelectorAll('[role="tab"]'));
-    const panels = Array.from(document.querySelectorAll('[role="tabpanel"]'));
-    const info = {
-      tabsCount: tabs.length,
-      panelsCount: panels.length,
-      tabs: tabs.map((t, i) => ({
-        idx: i,
-        text: t.textContent.trim().slice(0, 40),
-        ariaSelected: t.getAttribute('aria-selected'),
-        ariaControls: t.getAttribute('aria-controls'),
-        id: t.getAttribute('id'),
-        testid: t.getAttribute('data-testid'),
-      })),
-      panels: panels.map((p, i) => {
-        const table = p.querySelector('table');
-        const tableRadio = p.querySelector('input[value="TABLE"]');
-        const chartsRadio = p.querySelector('input[value="CHARTS"]');
-        return {
-          idx: i,
-          hidden: p.hasAttribute('hidden'),
-          ariaLabelledby: p.getAttribute('aria-labelledby'),
-          id: p.getAttribute('id'),
-          hasTable: !!table,
-          tableRows: table ? table.querySelectorAll('tr').length : 0,
-          firstTableCells: table
-            ? Array.from(table.querySelectorAll('td, th'))
-                .slice(0, 10)
-                .map((c) => c.textContent.trim())
-            : [],
-          tableChecked: tableRadio?.checked,
-          chartsChecked: chartsRadio?.checked,
-        };
-      }),
-    };
-    log('tabs&panels', info);
-    return info;
-  }
-
-  // ─── Получить активную панель ───
-  function getActivePanel() {
-    const tabs = document.querySelectorAll('[role="tab"]');
-    const panels = document.querySelectorAll('[role="tabpanel"]');
-
-    // Стратегия 1: aria-controls → id
-    for (const tab of tabs) {
-      if (tab.getAttribute('aria-selected') !== 'true') continue;
-      const controlsId = tab.getAttribute('aria-controls');
-      if (controlsId) {
-        const panel = document.getElementById(controlsId);
-        if (panel) return panel;
-      }
-    }
-
-    // Стратегия 2: id таба → aria-labelledby
-    for (const tab of tabs) {
-      if (tab.getAttribute('aria-selected') !== 'true') continue;
-      const tabId = tab.getAttribute('id');
-      if (tabId) {
-        for (const panel of panels) {
-          if (panel.getAttribute('aria-labelledby') === tabId) return panel;
-        }
-      }
-    }
-
-    // Стратегия 3: по индексу
-    const tabArr = Array.from(tabs);
-    const activeIdx = tabArr.findIndex(
-      (t) => t.getAttribute('aria-selected') === 'true'
-    );
-    if (activeIdx >= 0 && activeIdx < panels.length) return panels[activeIdx];
-
-    // Стратегия 4: без hidden
-    for (const panel of panels) {
-      if (!panel.hasAttribute('hidden')) return panel;
-    }
-
-    return panels[0] || null;
-  }
-
-  // ─── Переключить активную панель в TABLE ───
-  async function switchToTable() {
-    const panel = getActivePanel();
-    if (!panel) throw new Error('Активная панель не найдена');
-
-    const tableRadio = panel.querySelector('input[value="TABLE"]');
-    if (!tableRadio) throw new Error('Переключатель TABLE не найден');
-
-    log('switchToTable', `checked=${tableRadio.checked}, panelIdx=[${getPanelIndex(panel)}]`);
-
-    if (!tableRadio.checked) tableRadio.click();
-
-    await waitFor(
-      () => getActivePanel()?.querySelector('table') !== null,
-      10000
-    );
+    if (tab.getAttribute('aria-selected') === 'true') return;
+    tab.click();
+    await waitFor(() => tab.getAttribute('aria-selected') === 'true', 5000);
     await DELAY(3000);
   }
 
-  function getPanelIndex(panel) {
-    const panels = document.querySelectorAll('[role="tabpanel"]');
-    return Array.from(panels).indexOf(panel);
+  // ─── Прочитать первые N ячеек таблицы в панели ───
+  function getTableCells(panel, n = 15) {
+    const table = panel?.querySelector('table');
+    if (!table) return [];
+    return Array.from(table.querySelectorAll('td, th'))
+      .slice(0, n)
+      .map((c) => c.textContent.trim());
+  }
+
+  // ─── Дождаться обновления данных в таблице панели ───
+  // RuStore обновляет данные IN-PLACE (тот же DOM-элемент, другой textContent).
+  // Поэтому мы поллим содержимое ячеек, сравнивая с «старым» значением.
+  // compareIdx — индекс ячейки для сравнения (например, 9 = «Всего»).
+  async function waitForTableDataChange(panel, staleCells, compareIdx = 9, timeoutMs = 12000) {
+    const staleValue = staleCells[compareIdx] || '';
+    log('waitForChange', `polling cell[${compareIdx}], stale="${staleValue}"`);
+
+    try {
+      await waitFor(
+        () => {
+          const cells = getTableCells(panel, compareIdx + 1);
+          return cells.length > compareIdx && cells[compareIdx] !== staleValue;
+        },
+        timeoutMs,
+        500
+      );
+      const newCells = getTableCells(panel, 15);
+      log('waitForChange-done', newCells);
+      return true;
+    } catch (_) {
+      log('waitForChange-timeout', `за ${timeoutMs}мс ячейка не изменилась, текущие: ${JSON.stringify(getTableCells(panel, 15))}`);
+      return false;
+    }
+  }
+
+  // ─── Переключить панель в TABLE, дождаться таблицы ───
+  async function switchToTable(panel) {
+    const tableRadio = panel.querySelector('input[value="TABLE"]');
+    if (!tableRadio) throw new Error('Переключатель TABLE не найден');
+    if (!tableRadio.checked) tableRadio.click();
+    await waitFor(() => panel.querySelector('table') !== null, 10000);
+    await DELAY(3000);
   }
 
   // ─── Парсинг даты ───
@@ -239,15 +151,11 @@
     let m = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
     if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
     m = s.match(/^(\d{1,2})\.(\d{1,2})$/);
-    if (m) {
-      const y = new Date().getFullYear();
-      return `${y}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
-    }
+    if (m) return `${new Date().getFullYear()}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
     if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
     return null;
   }
 
-  // ─── Парсинг числа ───
   function parseNumber(str) {
     if (!str || typeof str !== 'string') return 0;
     const cleaned = str.replace(/\s/g, '').replace(/,/g, '.').replace(/[^\d.\-]/g, '');
@@ -255,7 +163,6 @@
     return isNaN(num) ? 0 : num;
   }
 
-  // ─── Проверка, похожа ли строка на дату ───
   function isDateLike(str) {
     if (!str || typeof str !== 'string') return false;
     return (
@@ -268,13 +175,11 @@
   function parseTableData(panel) {
     const table = panel.querySelector('table');
     if (!table) return {};
-
     const rows = Array.from(table.querySelectorAll('tr'));
     if (rows.length < 2) return {};
 
     const getCells = (row) =>
       Array.from(row.querySelectorAll('td, th')).map((c) => c.textContent.trim());
-
     const allRows = rows.map(getCells);
     const headers = allRows[0];
     const dataRows = allRows.slice(1);
@@ -299,7 +204,6 @@
 
     const firstColDates = dataRows.filter((r) => r.length > 0 && isDateLike(r[0]));
     const dateHeaders = headers.filter((h) => isDateLike(h));
-
     const result = {};
 
     if (firstColDates.length > dataRows.length / 2) {
@@ -307,7 +211,6 @@
         if (row.length < 2) continue;
         const date = parseDate(row[0]);
         if (!date) continue;
-
         if (totalColIndex >= 0 && totalColIndex < row.length) {
           result[date] = parseNumber(row[totalColIndex]);
         } else {
@@ -319,7 +222,6 @@
         if (!isDateLike(headers[ci])) continue;
         const date = parseDate(headers[ci]);
         if (!date) continue;
-
         if (totalRowIndex >= 0) {
           const totalRow = dataRows[totalRowIndex];
           result[date] = ci < totalRow.length ? parseNumber(totalRow[ci]) : 0;
@@ -348,32 +250,26 @@
     return result;
   }
 
-  // ─── Извлечь период из заголовка ───
   function extractDateRange() {
     const el = document.querySelector(SEL.dateRangeTrigger);
     if (!el) return null;
     const text = el.textContent || '';
     const m = text.match(/(\d{2}\.\d{2}\.\d{4})\s*[–\-—]\s*(\d{2}\.\d{2}\.\d{4})/);
-    if (m) return { from: m[1], to: m[2] };
-    return null;
+    return m ? { from: m[1], to: m[2] } : null;
   }
 
-  // ─── Извлечь ID приложения из URL ───
   function extractAppId() {
     const m = window.location.pathname.match(/\/apps\/(\d+)\//);
     return m ? m[1] : null;
   }
 
   // ═══════════════════════════════════════════════════════════
-  //  Главная функция сбора данных RuStore
+  //  Главная функция сбора данных
   // ═══════════════════════════════════════════════════════════
   async function collectData() {
     try {
       await waitForStatsPage();
       log('init', `URL: ${window.location.href}`);
-
-      // Дамп состояния ДО всего
-      dumpTabsAndPanels();
 
       const result = {
         appId: extractAppId(),
@@ -383,129 +279,49 @@
         metrics: {},
       };
 
+      // Индексы табов: 0=Просмотры, 1=Установки
+      const VIEWS_IDX = 0;
+      const INST_IDX = 1;
+
       // ── 1. Просмотры ──
-      log('step1-start', 'Переключаемся на таб Просмотры');
+      log('step1', 'Таб Просмотры → TABLE → чтение');
       await clickMetricTab(SEL.viewsTab);
-      dumpTabsAndPanels();
-
-      log('step1-switchToTable', 'Переключаем в TABLE для просмотров');
-      await switchToTable();
-
-      const viewsPanel = getActivePanel();
-      const viewsSnapshot = snapshotTable('step1-table', viewsPanel);
-      const viewsData = parseTableData(viewsPanel);
-      log('step1-parsed', viewsData);
-      result.metrics.views = viewsData;
+      const viewsPanel = getPanelByTabIndex(VIEWS_IDX);
+      await switchToTable(viewsPanel);
+      const viewsCells = getTableCells(viewsPanel, 15);
+      log('step1-cells', viewsCells);
+      result.metrics.views = parseTableData(viewsPanel);
+      log('step1-parsed', result.metrics.views);
 
       // ── 2. Установки ──
-      log('step2-start', 'Начинаем сбор установок');
+      log('step2', 'Таб Установки → ждём обновление данных → чтение');
+      const instPanel = getPanelByTabIndex(INST_IDX);
+      const staleCells = getTableCells(instPanel, 15);
+      log('step2-stale', staleCells);
 
-      // Запоминаем таблицу в панели установок ДО клика
-      const allPanels = Array.from(document.querySelectorAll('[role="tabpanel"]'));
-      const instPanelBefore = allPanels[1];
-      log('step2-instPanelBefore', {
-        exists: !!instPanelBefore,
-        idx: 1,
-        hasTable: !!instPanelBefore?.querySelector('table'),
-        tableCells: instPanelBefore?.querySelector('table')
-          ? Array.from(instPanelBefore.querySelector('table').querySelectorAll('td, th'))
-              .slice(0, 10)
-              .map((c) => c.textContent.trim())
-          : [],
-        tableHtml: instPanelBefore?.querySelector('table')?.outerHTML?.slice(0, 500),
-      });
-
-      const staleTable = instPanelBefore?.querySelector('table');
-      let staleSameAsViews = false;
-      if (staleTable && viewsSnapshot) {
-        // Проверяем, та же ли это таблица (по содержимому первых ячеек)
-        const staleCells = Array.from(staleTable.querySelectorAll('td, th'))
-          .slice(0, 5)
-          .map((c) => c.textContent.trim());
-        staleSameAsViews =
-          JSON.stringify(staleCells) === JSON.stringify(viewsSnapshot.first20Cells.slice(0, 5));
-        log('step2-staleCompare', { staleCells, viewsCells: viewsSnapshot.first20Cells.slice(0, 5), same: staleSameAsViews });
-      }
-
-      log('step2-clickTab', 'Кликаем таб Установки');
       await clickMetricTab(SEL.installationsTab);
 
-      // Дамп после клика на таб
-      dumpTabsAndPanels();
+      // RuStore обновляет данные IN-PLACE (тот же элемент <table>, другой textContent).
+      // Поллим ячейку[9] («Всего»): когда изменится — данные загрузились.
+      const changed = await waitForTableDataChange(instPanel, staleCells, 9, 12000);
 
-      // Проверяем что стало с панелью установок
-      const instPanelAfter = allPanels[1]; // тот же элемент из массива
-      log('step2-instPanelAfterClick', {
-        stillInDom: instPanelBefore ? document.body.contains(instPanelBefore) : 'N/A',
-        staleTableInDom: staleTable ? document.body.contains(staleTable) : 'N/A',
-        staleInInstPanel: instPanelBefore && staleTable ? instPanelBefore.contains(staleTable) : 'N/A',
-        newTableExists: !!instPanelBefore?.querySelector('table'),
-        newTableCells: instPanelBefore?.querySelector('table')
-          ? Array.from(instPanelBefore.querySelector('table').querySelectorAll('td, th'))
-              .slice(0, 10)
-              .map((c) => c.textContent.trim())
-          : [],
-        newTableHtml: instPanelBefore?.querySelector('table')?.outerHTML?.slice(0, 500),
-      });
-
-      // Если старая таблица всё ещё там — ждём её исчезновения
-      if (staleTable && instPanelBefore.contains(staleTable)) {
-        log('step2-waitingStale', 'Старая таблица всё ещё в панели, ждём исчезновения...');
-        try {
-          await waitFor(() => !instPanelBefore.contains(staleTable), 8000);
-          log('step2-staleGone', 'Старая таблица исчезла!');
-        } catch (_) {
-          log('step2-staleTimeout', 'Старая таблица НЕ исчезла за 8с — fallback CHARTS→TABLE');
-          const charts = instPanelBefore.querySelector('input[value="CHARTS"]');
-          const tableBtn = instPanelBefore.querySelector('input[value="TABLE"]');
-          log('step2-fallbackBtns', { chartsChecked: charts?.checked, tableChecked: tableBtn?.checked });
-          if (charts) charts.click();
-          await DELAY(1000);
-          if (tableBtn) tableBtn.click();
-          await DELAY(3000);
-        }
+      if (!changed) {
+        // Данные не обновились сами — принудительно CHARTS→TABLE
+        log('step2-forceSwitch', 'Данные не обновились, CHARTS→TABLE');
+        const charts = instPanel.querySelector('input[value="CHARTS"]');
+        const tableR = instPanel.querySelector('input[value="TABLE"]');
+        if (charts) { charts.click(); await DELAY(1000); }
+        if (tableR) { tableR.click(); await DELAY(1000); }
+        await waitFor(() => instPanel.querySelector('table') !== null, 10000);
+        await DELAY(3000);
       }
 
-      // Проверяем после ожидания/fallback
-      log('step2-afterWait', {
-        panelInDom: instPanelBefore ? document.body.contains(instPanelBefore) : 'N/A',
-        tableExists: !!instPanelBefore?.querySelector('table'),
-        tableCells: instPanelBefore?.querySelector('table')
-          ? Array.from(instPanelBefore.querySelector('table').querySelectorAll('td, th'))
-              .slice(0, 10)
-              .map((c) => c.textContent.trim())
-          : [],
-      });
+      const instCells = getTableCells(instPanel, 15);
+      log('step2-finalCells', instCells);
+      result.metrics.installations = parseTableData(instPanel);
+      log('step2-parsed', result.metrics.installations);
 
-      // getActivePanel() — что она возвращает?
-      const activePanelNow = getActivePanel();
-      log('step2-activePanel', {
-        activePanelIdx: getPanelIndex(activePanelNow),
-        isSameAsInst: activePanelNow === instPanelBefore,
-        isSameElement: activePanelNow === allPanels[1],
-      });
-
-      log('step2-switchToTable', 'Переключаем в TABLE для установок');
-      await switchToTable();
-
-      // Финальный дамп
-      dumpTabsAndPanels();
-
-      const finalPanel = getActivePanel();
-      log('step2-finalPanel', {
-        panelIdx: getPanelIndex(finalPanel),
-        isSameAsInst: finalPanel === instPanelBefore,
-      });
-
-      const instSnapshot = snapshotTable('step2-finalTable', finalPanel);
-      const instData = parseTableData(finalPanel);
-      log('step2-parsed', instData);
-
-      result.metrics.installations = instData;
-
-      // Сохраняем лог в результате
       result._debugLog = LOG;
-
       return { success: true, data: result };
     } catch (e) {
       LOG.push({ t: Date.now(), step: 'FATAL', detail: e.message });
@@ -521,7 +337,6 @@
       collectData().then(sendResponse);
       return true;
     }
-
     if (message.action === 'ping') {
       sendResponse({
         alive: true,
