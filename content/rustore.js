@@ -148,12 +148,14 @@
   }
 
   // ─── Переключить активную панель в режим TABLE и дождаться данных ───
+  // ВАЖНО: не сохраняем ссылку на panel через async-паузы!
+  // RuStore React SPA при переключении таба может ЗАМЕНИТЬ элемент
+  // panel целиком (detached old → new in DOM). Если держать ссылку
+  // на старый элемент, querySelector найдёт таблицу в мёртвом DOM
+  // с устаревшими данными. Поэтому все запросы — свежие (getActivePanel()).
   async function switchToTableView() {
-    const panel = getActivePanel();
-    if (!panel) throw new Error('Активная панель не найдена');
-
-    // Найти radio-кнопку TABLE внутри панели
-    const tableRadio = panel.querySelector('input[value="TABLE"]');
+    // Найти radio-кнопку TABLE в активной панели (свежий запрос)
+    const tableRadio = getActivePanel()?.querySelector('input[value="TABLE"]');
     if (!tableRadio)
       throw new Error(
         'Переключатель TABLE не найден в панели. Возможно, интерфейс RuStore изменился.'
@@ -163,18 +165,14 @@
       tableRadio.click();
     }
 
-    // Ждём появления <table> элемента
+    // Ждём появления <table> — СВЕЖИЙ запрос каждый тик
     await waitFor(
-      () => panel.querySelector('table') !== null,
+      () => getActivePanel()?.querySelector('table') !== null,
       10000
     );
 
     // Фиксированная пауза — даём таблице прогрузиться с данными.
-    // После клика TABLE может появиться пустая таблица,
-    // а затем данные подгрузятся асинхронно.
     await DELAY(3000);
-
-    return panel;
   }
 
   // ─── Переключить обратно в CHARTS ───
@@ -359,8 +357,9 @@
       // ── 1. Просмотры страницы ──
       try {
         await clickMetricTab(SEL.viewsTab);
-        const panel = await switchToTableView();
-        result.metrics.views = parseTableData(panel);
+        await switchToTableView();
+        // СВЕЖИЙ запрос панели — после всех задержек
+        result.metrics.views = parseTableData(getActivePanel());
       } catch (e) {
         result.metrics.views = {};
         result.metrics._viewsError = e.message;
@@ -369,8 +368,10 @@
       // ── 2. Все установки ──
       try {
         await clickMetricTab(SEL.installationsTab);
-        const panel = await switchToTableView();
-        result.metrics.installations = parseTableData(panel);
+        await switchToTableView();
+        // СВЕЖИЙ запрос панели — после всех задержек.
+        // React мог заменить элемент панели во время загрузки данных.
+        result.metrics.installations = parseTableData(getActivePanel());
       } catch (e) {
         result.metrics.installations = {};
         result.metrics._installationsError = e.message;
