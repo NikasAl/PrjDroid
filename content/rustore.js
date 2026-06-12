@@ -64,7 +64,8 @@
     if (!tab) throw new Error(`Таб не найден: ${testId}`);
     if (tab.getAttribute('aria-selected') === 'true') return;
     tab.click();
-    await waitFor(() => tab.getAttribute('aria-selected') === 'true', 5000);
+    // Перечитываем таб из DOM каждый тик — React может пересоздать элемент после клика
+    await waitFor(() => document.querySelector(testId)?.getAttribute('aria-selected') === 'true', 5000);
     await DELAY(3000);
   }
 
