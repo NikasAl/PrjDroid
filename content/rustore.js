@@ -76,21 +76,20 @@
     return Array.from(table.querySelectorAll('td, th')).slice(0, n).map((c) => c.textContent.trim());
   }
 
-  // Дождаться TABLE mode и загрузки таблицы
-  async function ensureTable(panelIdx) {
+  // Переключить панель в TABLE mode. Без waitFor — только клик + фиксированная задержка.
+  async function switchToTable(panelIdx) {
     const panel = panelAt(panelIdx);
     if (!panel) throw new Error(`Панель ${panelIdx} не найдена`);
+    if (panel.querySelector('table')) {
+      log('switchTable', `panel ${panelIdx}: table already present`);
+      await DELAY(1000);
+      return;
+    }
     const radio = panel.querySelector('input[value="TABLE"]');
     if (!radio) throw new Error('TABLE radio не найден');
-
-    // RuStore копирует checked-состояние radio в неактивные панели,
-    // но реальный режим может быть CHARTS. Проверяем наличие <table>, а не radio.
-    if (!panelAt(panelIdx)?.querySelector('table')) {
-      log('ensureTable', `panel ${panelIdx}: table missing, clicking TABLE radio`);
-      radio.click();
-    }
-    await waitFor(() => panelAt(panelIdx)?.querySelector('table') !== null, 10000);
-    await DELAY(3000);
+    log('switchTable', `panel ${panelIdx}: clicking TABLE radio`);
+    radio.click();
+    await DELAY(4000);
   }
 
   function parseDate(s) {
@@ -194,28 +193,31 @@
         timestamp: new Date().toISOString(), dateRange: extractDateRange(), metrics: {},
       };
 
-      // ── 0. Предзагрузка: посещаем таб установок, чтобы RuStore загрузил данные ──
-      log('0-preload', 'clicking installations tab to cache data');
-      await clickTab(SEL.installationsTab);
-      await DELAY(5000);
-
       // ── 1. Просмотры (панель 0) ──
       log('1-clickViews', '');
       await clickTab(SEL.viewsTab);
-      log('1-ensureTable', '');
-      await ensureTable(0);
+      log('1-switchTable', '');
+      await switchToTable(0);
       const vCells = readCells(0, 15);
       log('1-cells', vCells);
       result.metrics.views = parseTableData(panelAt(0));
       log('1-parsed', result.metrics.views);
 
-      // ── 2. Установки (панель 1) — данные уже закешированы ──
+      // ── 2. Установки (панель 1) ──
+      // Кликаем таб, ждём загрузки данных, затем принудительно CHARTS→TABLE
+      // для чистого рендера таблицы (избегаем проблемы in-place обновления)
       log('2-clickInst', '');
       await clickTab(SEL.installationsTab);
-      await DELAY(2000);
+      await DELAY(3000);
 
-      log('2-ensureTable', '');
-      await ensureTable(1);
+      const p = panelAt(1);
+      const ch = p?.querySelector('input[value="CHARTS"]');
+      const tb = p?.querySelector('input[value="TABLE"]');
+      if (ch) { log('2-charts', 'clicking CHARTS'); ch.click(); }
+      await DELAY(2000);
+      if (tb) { log('2-table', 'clicking TABLE'); tb.click(); }
+      await DELAY(4000);
+
       const iCells = readCells(1, 15);
       log('2-cells', iCells);
       result.metrics.installations = parseTableData(panelAt(1));
