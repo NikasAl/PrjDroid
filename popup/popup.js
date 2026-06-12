@@ -206,11 +206,18 @@ async function collectCurrentPage() {
   try {
     const result = await sendMsg('collectCurrentPage');
     if (result.success) {
+      // Выводим debug-лог в консоль popup
+      if (result.data?._debugLog) {
+        console.log('[AMH Debug Log]', result.data._debugLog);
+      }
       dailyData = await sendMsg('getDailyData') || {};
       showStatus('done', `Данные ${result.data?.platform || ''} собраны`);
       renderDataSummary();
       updateButtons();
     } else {
+      if (result._debugLog) {
+        console.log('[AMH Debug Log]', result._debugLog);
+      }
       showStatus('error', result.error || 'Ошибка парсинга');
     }
   } catch (e) {
