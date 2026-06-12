@@ -122,7 +122,7 @@ async function saveApp() {
   }
 
   apps.push({ id: Date.now().toString(), name, platform, appId, url });
-  await sendMsg('saveApps', apps);
+  await sendMsg('saveApps', { apps });
 
   el.addForm.classList.add('hidden');
   clearForm();
@@ -132,7 +132,7 @@ async function saveApp() {
 
 function removeApp(id) {
   apps = apps.filter((a) => a.id !== id);
-  sendMsg('saveApps', apps);
+  sendMsg('saveApps', { apps });
   renderAppList();
   updateButtons();
 }

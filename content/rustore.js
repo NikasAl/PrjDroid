@@ -81,7 +81,12 @@
     }
   }
 
-  // ─── Нажать на таб метрики и дождаться переключения + рендера панели ───
+  // ─── Нажать на таб метрики и дождаться загрузки данных ───
+  // Используем фиксированную паузу вместо отслеживания DOM-состояния,
+  // потому что RuStore (React SPA) обновляет DOM асинхронно и
+  // непредсказуемо: после клика на таб появляется спиннер на ~1 сек,
+  // затем рендерится содержимое. Проверки hidden/aria-selected/table
+  // ненадёжны — данные могут быть ещё не загружены.
   async function clickMetricTab(testId) {
     const tab = document.querySelector(testId);
     if (!tab) throw new Error(`Таб не найден: ${testId}`);
@@ -89,27 +94,13 @@
     const isSelected = tab.getAttribute('aria-selected') === 'true';
     if (!isSelected) {
       tab.click();
-      // 1. Ждём, пока aria-selected изменится на кликнутом табе
+      // Ждём изменения aria-selected
       await waitFor(
         () => tab.getAttribute('aria-selected') === 'true',
         5000
       );
-
-      // 2. Ждём, пока переключатель CHARTS/TABLE появится
-      //    в КОНКРЕТНОЙ панели, привязанной к этому табу.
-      //    Не relying на getActivePanel() сразу — ждём через
-      //    повторный вызов, т.к. DOM может обновляться асинхронно.
-      await waitFor(
-        () => {
-          const panel = getActivePanel();
-          return panel && panel.querySelector('input[value="TABLE"]') !== null;
-        },
-        10000
-      );
-
-      // 3. Доп. пауза после появления переключателя —
-      //    React может ещё рендерить содержимое
-      await DELAY(1000);
+      // Фиксированная пауза — даём данным панели прогрузиться
+      await DELAY(3000);
     }
   }
 
@@ -156,7 +147,7 @@
     return panels[0] || null;
   }
 
-  // ─── Переключить активную панель в режим TABLE ───
+  // ─── Переключить активную панель в режим TABLE и дождаться данных ───
   async function switchToTableView() {
     const panel = getActivePanel();
     if (!panel) throw new Error('Активная панель не найдена');
@@ -172,45 +163,16 @@
       tableRadio.click();
     }
 
-    // Ждём появления <table>
-    try {
-      await waitFor(
-        () => panel.querySelector('table') !== null,
-        10000
-      );
-    } catch (e) {
-      throw new Error(
-        'Таблица не появилась после переключения в режим TABLE'
-      );
-    }
+    // Ждём появления <table> элемента
+    await waitFor(
+      () => panel.querySelector('table') !== null,
+      10000
+    );
 
-    // ── КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: дождаться, пока таблица будет содержать данные ──
-    // После переключения таба RuStore показывает спиннер загрузки (~1 сек),
-    // затем таблица появляется. Элемент <table> может существовать,
-    // но ячейки ещё пустые. Ждём появления хотя бы одной
-    // дата-подобной ячейки в заголовке или данных.
-    try {
-      await waitFor(
-        () => {
-          const table = panel.querySelector('table');
-          if (!table) return false;
-          const cells = table.querySelectorAll('th, td');
-          if (cells.length < 3) return false;
-          // Проверяем, что есть хотя бы одна дата или строка «Всего»/«Итого»
-          return Array.from(cells).some(
-            (c) => isDateLike(c.textContent.trim())
-          );
-        },
-        10000
-      );
-    } catch (e) {
-      throw new Error(
-        'Таблица появилась, но данные не загрузились (таймаут).'
-      );
-    }
-
-    // Финальная пауза — гарантирует, что React закончил рендер
-    await DELAY(2000);
+    // Фиксированная пауза — даём таблице прогрузиться с данными.
+    // После клика TABLE может появиться пустая таблица,
+    // а затем данные подгрузятся асинхронно.
+    await DELAY(3000);
 
     return panel;
   }

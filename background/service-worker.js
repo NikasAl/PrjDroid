@@ -414,7 +414,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       return true;
 
     case 'saveApps':
-      saveApps(msg.apps).then(() => sendResponse({ success: true }));
+      saveApps(msg.data.apps).then(() => sendResponse({ success: true }));
       return true;
 
     case 'getDailyData':
