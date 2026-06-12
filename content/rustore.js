@@ -183,11 +183,55 @@
     return m ? m[1] : null;
   }
 
+  // Выбрать период «Месяц» в фильтре дат
+  async function selectMonthRange() {
+    const trigger = document.querySelector(SEL.dateRangeTrigger);
+    if (!trigger) throw new Error('Триггер диапазона дат не найден');
+
+    // Проверяем, не выбран ли уже «месяц»
+    const currentLabel = (trigger.textContent || '').toLowerCase();
+    if (currentLabel.includes('месяц')) {
+      log('selectMonth', 'уже выбран период «месяц»');
+      return;
+    }
+
+    log('selectMonth', 'открываем выпадающий список дат');
+    trigger.click();
+    await DELAY(500);
+
+    // Ищем кнопку «Месяц» в выпавшем списке
+    const options = document.querySelectorAll('[data-testid="advancedAppStatisticsPage-filterDateRange-SelectItem"]');
+    let monthBtn = null;
+    for (const opt of options) {
+      if ((opt.textContent || '').trim().toLowerCase() === 'месяц') {
+        monthBtn = opt;
+        break;
+      }
+    }
+    if (!monthBtn) throw new Error('Опция «Месяц» не найдена в выпадающем списке');
+
+    log('selectMonth', 'кликаем «Месяц»');
+    monthBtn.click();
+
+    // Ждём обновления данных — текст триггера изменится на «месяц»
+    await waitFor(() => {
+      const t = document.querySelector(SEL.dateRangeTrigger);
+      return t && (t.textContent || '').toLowerCase().includes('месяц');
+    }, 5000);
+    log('selectMonth', 'период «месяц» активирован');
+
+    // Даём время загрузиться данным за месяц
+    await DELAY(3000);
+  }
+
   // ═══════════════════════════════════════════════════════════
   async function collectData() {
     try {
       await waitForStatsPage();
       log('init', window.location.href);
+
+      // Установить период «Месяц»
+      await selectMonthRange();
 
       const result = {
         appId: extractAppId(), platform: 'rustore',
