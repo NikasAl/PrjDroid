@@ -148,22 +148,39 @@
   }
 
   // ─── Переключить активную панель в режим TABLE и дождаться данных ───
-  // ВАЖНО: не сохраняем ссылку на panel через async-паузы!
-  // RuStore React SPA при переключении таба может ЗАМЕНИТЬ элемент
-  // panel целиком (detached old → new in DOM). Если держать ссылку
-  // на старый элемент, querySelector найдёт таблицу в мёртвом DOM
-  // с устаревшими данными. Поэтому все запросы — свежие (getActivePanel()).
+  // ВАЖНО: RuStore (React SPA) предрендерит ВСЕ панели (tabpanel) с
+  // COPIED данными из активного таба. Поэтому radio TABLE уже checked
+  // и таблица уже существует — но с ЧУЖИМИ данными.
+  // Чтобы заставить RuStore загрузить настоящие данные для текущего
+  // таба, ВСЕГДА сначала переключаем на CHARTS (сбрасываем состояние),
+  // затем на TABLE (триггерим реальный запрос данных).
   async function switchToTableView() {
-    // Найти radio-кнопку TABLE в активной панели (свежий запрос)
-    const tableRadio = getActivePanel()?.querySelector('input[value="TABLE"]');
-    if (!tableRadio)
+    const panel = getActivePanel();
+    if (!panel)
+      throw new Error('Активная панель не найдена');
+
+    const tableRadio = panel.querySelector('input[value="TABLE"]');
+    const chartsRadio = panel.querySelector('input[value="CHARTS"]');
+
+    if (!tableRadio || !chartsRadio)
       throw new Error(
-        'Переключатель TABLE не найден в панели. Возможно, интерфейс RuStore изменился.'
+        'Переключатели TABLE/CHARTS не найдены в панели. Возможно, интерфейс RuStore изменился.'
       );
 
-    if (!tableRadio.checked) {
-      tableRadio.click();
+    // Шаг 1: ВСЕГДА переключаем на CHARTS — сбрасываем предрендеренный
+    // stale-состояние таблицы, чтобы RuStore сбросил кэшированные данные
+    if (!chartsRadio.checked) {
+      chartsRadio.click();
+    } else {
+      // Даже если CHARTS уже «выбран», кликаем принудительно —
+      // это заставит React заметить смену и сбросить состояние таблицы
+      chartsRadio.click();
     }
+    await DELAY(1000);
+
+    // Шаг 2: Переключаем на TABLE — триггерим реальную загрузку данных
+    // для ТЕКУЩЕГО таба (просмотры, установки и т.д.)
+    tableRadio.click();
 
     // Ждём появления <table> — СВЕЖИЙ запрос каждый тик
     await waitFor(
@@ -171,7 +188,7 @@
       10000
     );
 
-    // Фиксированная пауза — даём таблице прогрузиться с данными.
+    // Фиксированная пауза — даём таблице прогрузиться с реальными данными
     await DELAY(3000);
   }
 

@@ -387,7 +387,7 @@ async function clearData() {
 // ═══════════════════════════════════════════════════════════
 
 function sendMsg(action, data) {
-  const msg = data !== undefined ? { action, ...data } : { action };
+  const msg = data !== undefined ? { action, data } : { action };
   return new Promise((resolve) => {
     chrome.runtime.sendMessage(msg, (resp) => {
       resolve(resp);
