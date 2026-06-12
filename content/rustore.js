@@ -81,7 +81,7 @@
     }
   }
 
-  // ─── Нажать на таб метрики и дождаться переключения панели ───
+  // ─── Нажать на таб метрики и дождаться переключения + рендера панели ───
   async function clickMetricTab(testId) {
     const tab = document.querySelector(testId);
     if (!tab) throw new Error(`Таб не найден: ${testId}`);
@@ -89,12 +89,26 @@
     const isSelected = tab.getAttribute('aria-selected') === 'true';
     if (!isSelected) {
       tab.click();
-      // Ждём пока aria-selected изменится и панель станет видимой
+      // Ждём пока aria-selected изменится
       await waitFor(
         () => tab.getAttribute('aria-selected') === 'true',
         5000
       );
-      await DELAY(600); // пауза на анимацию/рендер графика
+    }
+
+    // Ждём, пока React отрендерит содержимое панели
+    // (переключатель CHARTS/TABLE — признак того, что компонент смонтирован)
+    const panel = getActivePanel();
+    if (panel) {
+      try {
+        await waitFor(
+          () => panel.querySelector('input[value="TABLE"]') !== null,
+          10000
+        );
+        await DELAY(400);
+      } catch (e) {
+        throw new Error('Содержимое панели метрики не отрендерилось');
+      }
     }
   }
 
@@ -121,19 +135,21 @@
 
     if (!tableRadio.checked) {
       tableRadio.click();
+    }
 
-      // Дождаться появления <table> внутри панели
-      try {
-        await waitFor(
-          () => panel.querySelector('table') !== null,
-          8000
-        );
-        await DELAY(200);
-      } catch (e) {
-        throw new Error(
-          'Таблица не появилась после переключения в режим TABLE'
-        );
-      }
+    // ВСЕГДА ждём появления <table>, даже если radio был checked.
+    // После переключения таба React может перемонтировать панель —
+    // radio «checked» может сохраниться, но <table> ещё не отрендерена.
+    try {
+      await waitFor(
+        () => panel.querySelector('table') !== null,
+        10000
+      );
+      await DELAY(300);
+    } catch (e) {
+      throw new Error(
+        'Таблица не появилась после переключения в режим TABLE'
+      );
     }
 
     return panel;
