@@ -147,60 +147,22 @@
     return panels[0] || null;
   }
 
-  // ─── Переключить активную панель в режим TABLE и дождаться данных ───
-  // ВАЖНО: RuStore (React SPA) предрендерит ВСЕ панели (tabpanel) с
-  // COPIED данными из активного таба. Поэтому radio TABLE уже checked
-  // и таблица уже существует — но с ЧУЖИМИ данными.
-  // Чтобы заставить RuStore загрузить настоящие данные для текущего
-  // таба, ВСЕГДА сначала переключаем на CHARTS (сбрасываем состояние),
-  // затем на TABLE (триггерим реальный запрос данных).
-  async function switchToTableView() {
+  // ─── Переключить активную панель в TABLE, дождаться таблицы ───
+  async function switchToTable() {
     const panel = getActivePanel();
-    if (!panel)
-      throw new Error('Активная панель не найдена');
+    if (!panel) throw new Error('Активная панель не найдена');
 
     const tableRadio = panel.querySelector('input[value="TABLE"]');
-    const chartsRadio = panel.querySelector('input[value="CHARTS"]');
+    if (!tableRadio)
+      throw new Error('Переключатель TABLE не найден в панели');
 
-    if (!tableRadio || !chartsRadio)
-      throw new Error(
-        'Переключатели TABLE/CHARTS не найдены в панели. Возможно, интерфейс RuStore изменился.'
-      );
+    if (!tableRadio.checked) tableRadio.click();
 
-    // Шаг 1: ВСЕГДА переключаем на CHARTS — сбрасываем предрендеренный
-    // stale-состояние таблицы, чтобы RuStore сбросил кэшированные данные
-    if (!chartsRadio.checked) {
-      chartsRadio.click();
-    } else {
-      // Даже если CHARTS уже «выбран», кликаем принудительно —
-      // это заставит React заметить смену и сбросить состояние таблицы
-      chartsRadio.click();
-    }
-    await DELAY(1000);
-
-    // Шаг 2: Переключаем на TABLE — триггерим реальную загрузку данных
-    // для ТЕКУЩЕГО таба (просмотры, установки и т.д.)
-    tableRadio.click();
-
-    // Ждём появления <table> — СВЕЖИЙ запрос каждый тик
     await waitFor(
       () => getActivePanel()?.querySelector('table') !== null,
       10000
     );
-
-    // Фиксированная пауза — даём таблице прогрузиться с реальными данными
     await DELAY(3000);
-  }
-
-  // ─── Переключить обратно в CHARTS ───
-  async function switchToChartView() {
-    const panel = getActivePanel();
-    if (!panel) return;
-    const chartsRadio = panel.querySelector('input[value="CHARTS"]');
-    if (chartsRadio && !chartsRadio.checked) {
-      chartsRadio.click();
-      await DELAY(300);
-    }
   }
 
   // ─── Парсинг даты из различных форматов ───
@@ -360,46 +322,54 @@
     try {
       await waitForStatsPage();
 
-      const appId = extractAppId();
-      const dateRange = extractDateRange();
-
       const result = {
-        appId,
+        appId: extractAppId(),
         platform: 'rustore',
         timestamp: new Date().toISOString(),
-        dateRange,
+        dateRange: extractDateRange(),
         metrics: {},
       };
 
-      // ── 1. Просмотры страницы ──
+      // ── 1. Просмотры: переключаем на TABLE и копируем ──
       try {
         await clickMetricTab(SEL.viewsTab);
-        await switchToTableView();
-        // СВЕЖИЙ запрос панели — после всех задержек
+        await switchToTable();
         result.metrics.views = parseTableData(getActivePanel());
       } catch (e) {
         result.metrics.views = {};
         result.metrics._viewsError = e.message;
       }
 
-      // ── 2. Все установки ──
+      // ── 2. Установки: нажимаем таб, ждём загрузки, копируем ──
       try {
+        // Находим панель установок (индекс 1 — второй таб/панель)
+        const allPanels = document.querySelectorAll('[role="tabpanel"]');
+        const installationsPanel = allPanels[1];
+        // Запоминаем предрендеренную таблицу В ПАНЕЛИ УСТАНОВОК
+        const staleTable = installationsPanel?.querySelector('table');
+
         await clickMetricTab(SEL.installationsTab);
-        await switchToTableView();
-        // СВЕЖИЙ запрос панели — после всех задержек.
-        // React мог заменить элемент панели во время загрузки данных.
+
+        // Ждём, пока RuStore уберёт предрендеренную таблицу с чужими данными
+        if (staleTable) {
+          try {
+            await waitFor(() => !installationsPanel.contains(staleTable), 8000);
+          } catch (_) {
+            // Таблица не исчезла сама — принудительно CHARTS→TABLE
+            const charts = installationsPanel.querySelector('input[value="CHARTS"]');
+            const table = installationsPanel.querySelector('input[value="TABLE"]');
+            if (charts) charts.click();
+            await DELAY(1000);
+            if (table) table.click();
+          }
+        }
+
+        // Переключаем в TABLE и ждём данные
+        await switchToTable();
         result.metrics.installations = parseTableData(getActivePanel());
       } catch (e) {
         result.metrics.installations = {};
         result.metrics._installationsError = e.message;
-      }
-
-      // ── Вернуть первый таб и режим CHARTS ──
-      try {
-        await clickMetricTab(SEL.viewsTab);
-        await switchToChartView();
-      } catch (_) {
-        // не критично
       }
 
       return { success: true, data: result };
