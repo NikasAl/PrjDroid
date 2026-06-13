@@ -173,45 +173,6 @@ async function ensureRsyaTabAndSend(action, data = {}) {
   return sendToTab(tabId, { action, data }, 3, 2000);
 }
 
-/**
- * Три подхода для получения данных РСЯ через content script:
- * 1. Cookies only (без токена)
- * 2. Токен из storage расширения
- * 3. Токен, извлечённый из страницы
- */
-async function tryCollectRsya(tabId) {
-  // Подход 1: Cookies only
-  let result = await ensureRsyaTabAndSend('collectRsyaApi', { token: null });
-  if (result?.success) return result;
-  const cookieError = result?.error || 'нет ответа от content script';
-  console.log('[AMH] РСЯ API cookies-only failed:', cookieError);
-
-  // Подход 2: Токен из storage расширения
-  const savedToken = await getRsyaToken();
-  if (savedToken) {
-    result = await ensureRsyaTabAndSend('collectRsyaApi', { token: savedToken });
-    if (result?.success) return result;
-    console.log('[AMH] РСЯ API with saved token failed:', result?.error);
-  }
-
-  // Подход 3: Токен из страницы
-  const extractResult = await ensureRsyaTabAndSend('extractRsyaToken');
-  const pageToken = extractResult?.token;
-  if (pageToken) {
-    console.log('[AMH] Found token from page, length:', pageToken.length);
-    await saveRsyaToken(pageToken);
-
-    result = await ensureRsyaTabAndSend('collectRsyaApi', { token: pageToken });
-    if (result?.success) return result;
-    console.log('[AMH] РСЯ API with page token failed:', result?.error);
-  }
-
-  return {
-    success: false,
-    error: `Cookies: ${cookieError}${savedToken ? ' | Token: ' + (result?.error || '') : ''}${pageToken ? ' | PageToken: ' + (result?.error || '') : ''}`,
-    _source: 'api-all-failed',
-  };
-}
 
 // ═══════════════════════════════════════════════════════════
 //  Сбор данных с одного URL
@@ -220,7 +181,6 @@ async function tryCollectRsya(tabId) {
 const PLATFORM_ACTION = {
   rustore: 'collectRuStore',
   googleplay: 'collectGooglePlay',
-  rsya: 'collectYandexAds',
 };
 
 async function collectFromUrl(url, platform, reuseTabId) {
@@ -234,7 +194,7 @@ async function collectFromUrl(url, platform, reuseTabId) {
     }
 
     await waitForTabLoad(tabId);
-    const spaDelay = platform === 'rsya' ? 10000 : 3500;
+    const spaDelay = 3500;
     await new Promise((r) => setTimeout(r, spaDelay));
 
     const action = PLATFORM_ACTION[platform];
@@ -273,41 +233,27 @@ async function collectAll() {
   const effectiveTotal = (rsyaApps.length > 0 ? 1 : 0) + otherApps.length;
   await setStatus({ status: 'collecting', current: 0, total: effectiveTotal });
 
-  // ── РСЯ: пробуем API (один запрос для всех приложений) ──
+  // ── РСЯ: API (один запрос для всех приложений) ──
   if (rsyaApps.length > 0) {
     chrome.action.setBadgeText({ text: `РСЯ` });
     chrome.action.setBadgeBackgroundColor({ color: '#4361ee' });
     await setStatus({ status: 'collecting', current: 1, total: effectiveTotal, appName: 'РСЯ (API)' });
 
-    const rsyaResult = await tryCollectRsya(null);
-    if (rsyaResult.success) {
-      mergeRsyaData(dailyData, rsyaResult.data.apps);
-      results.push({
-        app: `${rsyaResult.data.apps.length} РСЯ приложений (API)`,
-        success: true,
-        source: 'api',
-      });
-    } else {
-      // API не сработал — пробуем DOM-парсинг
-      console.log('[AMH] РСЯ API failed, trying DOM fallback:', rsyaResult.error);
-      await setStatus({ status: 'collecting', current: 1, total: effectiveTotal, appName: 'РСЯ (DOM)' });
-
-      try {
-        const rsyaUrl = rsyaApps[0]?.url || 'https://partner.yandex.ru/v2/dashboard';
-        const { data, tabId: usedTabId } = await collectFromUrl(rsyaUrl, 'rsya', workerTabId);
-        if (usedTabId) workerTabId = usedTabId;
-
-        if (data.apps) {
-          mergeRsyaData(dailyData, data.apps);
-          results.push({
-            app: `${data.apps.length} РСЯ приложений (DOM)`,
-            success: true,
-            source: 'dom',
-          });
-        }
-      } catch (e) {
-        results.push({ app: 'РСЯ', success: false, error: e.message, apiError: rsyaResult.error });
+    const token = await getRsyaToken();
+    if (token) {
+      const rsyaResult = await ensureRsyaTabAndSend('collectRsyaApi', { token });
+      if (rsyaResult?.success) {
+        mergeRsyaData(dailyData, rsyaResult.data.apps);
+        results.push({
+          app: `${rsyaResult.data.apps.length} РСЯ приложений`,
+          success: true,
+          source: 'api',
+        });
+      } else {
+        results.push({ app: 'РСЯ', success: false, error: rsyaResult?.error || 'нет ответа' });
       }
+    } else {
+      results.push({ app: 'РСЯ', success: false, error: 'Укажите OAuth-токен РСЯ в настройках' });
     }
 
     await saveDailyData(dailyData);
@@ -345,50 +291,6 @@ async function collectAll() {
   return { success: true, results, data: dailyData };
 }
 
-/**
- * Три подхода для получения данных РСЯ:
- * 1. Cookies only (credentials:include)
- * 2. Токен из storage расширения
- * 3. Токен из страницы (через content script)
- */
-async function tryCollectRsya(tabId) {
-  // Подход 1: Cookies only
-  let result = await collectRsyaViaApi(null);
-  if (result.success) return result;
-
-  const cookieError = result.error;
-  console.log('[AMH] РСЯ API cookies-only failed:', cookieError);
-
-  // Подход 2: Токен из storage расширения
-  const savedToken = await getRsyaToken();
-  if (savedToken) {
-    result = await collectRsyaViaApi(savedToken);
-    if (result.success) return result;
-    console.log('[AMH] РСЯ API with saved token failed:', result.error);
-  }
-
-  // Подход 3: Попробовать извлечь токен из страницы
-  if (tabId) {
-    const pageToken = await extractTokenFromPage(tabId);
-    if (pageToken) {
-      console.log('[AMH] Found token from page, length:', pageToken.length);
-      // Сохраняем для будущего использования
-      await saveRsyaToken(pageToken);
-
-      result = await collectRsyaViaApi(pageToken);
-      if (result.success) return result;
-      console.log('[AMH] РСЯ API with page token failed:', result.error);
-    }
-  }
-
-  // Ни один подход не сработал
-  return {
-    success: false,
-    error: `API: ${cookieError}${savedToken ? ' | Token: ' + result.error : ''}`,
-    _debugLog: result._debugLog,
-    _source: 'api-all-failed',
-  };
-}
 
 // ═══════════════════════════════════════════════════════════
 //  Форматирование в Markdown для LLM
@@ -650,52 +552,23 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         }
         const url = tabs[0].url || '';
 
-        // ── РСЯ: API через content script (same-origin cookies) → fallback DOM ──
+        // ── РСЯ: API через content script (токен обязателен) ──
         if (url.includes('partner.yandex.ru')) {
           const tabId = tabs[0].id;
           (async () => {
             try {
-              // Подход 1: Cookies only
-              let result = await sendToTab(tabId, { action: 'collectRsyaApi', data: { token: null } }, 3, 2000);
-
-              // Подход 2: Токен из storage
-              if (!result?.success) {
-                const savedToken = await getRsyaToken();
-                if (savedToken) {
-                  result = await sendToTab(tabId, { action: 'collectRsyaApi', data: { token: savedToken } }, 3, 2000);
-                }
+              const token = await getRsyaToken();
+              if (!token) {
+                sendResponse({ success: false, error: 'Укажите OAuth-токен РСЯ в настройках расширения' });
+                return;
               }
-
-              // Подход 3: Токен из страницы
-              if (!result?.success) {
-                const extResp = await sendToTab(tabId, { action: 'extractRsyaToken' }, 3, 2000);
-                if (extResp?.token) {
-                  await saveRsyaToken(extResp.token);
-                  result = await sendToTab(tabId, { action: 'collectRsyaApi', data: { token: extResp.token } }, 3, 2000);
-                }
-              }
-
+              const result = await sendToTab(tabId, { action: 'collectRsyaApi', data: { token } }, 3, 2000);
               if (result?.success) {
                 const dailyData = await getDailyData();
                 mergeRsyaData(dailyData, result.data.apps);
                 await saveDailyData(dailyData);
-                sendResponse(result);
-                return;
               }
-
-              // API не сработал — fallback на DOM-парсинг
-              console.log('[AMH] РСЯ API all failed, trying DOM:', result?.error);
-              const domResp = await sendToTab(tabId, { action: 'collectYandexAds' }, 3, 2000);
-              if (domResp?.success) {
-                const dailyData = await getDailyData();
-                if (domResp.data.apps) {
-                  mergeRsyaData(dailyData, domResp.data.apps);
-                  await saveDailyData(dailyData);
-                }
-                sendResponse(domResp);
-              } else {
-                sendResponse({ success: false, error: `API: ${result?.error}\nDOM: ${domResp?.error || 'нет ответа'}` });
-              }
+              sendResponse(result || { success: false, error: 'нет ответа от content script' });
             } catch (e) {
               sendResponse({ success: false, error: e.message });
             }
