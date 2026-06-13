@@ -6,6 +6,7 @@ const KEYS = {
   DATA: 'amh_dailyData',
   STATUS: 'amh_collectionStatus',
   RSYA_TOKEN: 'amh_rsyaToken',
+  RSYA_BY_BLOCK: 'amh_rsyaByBlockType',
 };
 
 // ═══════════════════════════════════════════════════════════
@@ -39,6 +40,12 @@ async function getRsyaToken() {
 }
 async function saveRsyaToken(token) {
   await chrome.storage.local.set({ [KEYS.RSYA_TOKEN]: token });
+}
+async function getRsyaByBlockType() {
+  return (await chrome.storage.local.get(KEYS.RSYA_BY_BLOCK))[KEYS.RSYA_BY_BLOCK] || {};
+}
+async function saveRsyaByBlockType(data) {
+  await chrome.storage.local.set({ [KEYS.RSYA_BY_BLOCK]: data });
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -76,6 +83,28 @@ function mergeRsyaData(stored, apps) {
       }
       if (Object.keys(cleanValues).length > 0) {
         mergeData(stored, 'rsya', appId, { [metric]: cleanValues });
+      }
+    }
+  }
+  return stored;
+}
+
+// Мердж данных РСЯ по типам блоков
+function mergeRsyaByBlockType(stored, byBlockType) {
+  if (!byBlockType || typeof byBlockType !== 'object') return stored;
+
+  for (const [appName, blocks] of Object.entries(byBlockType)) {
+    if (!stored[appName]) stored[appName] = {};
+    for (const [blockType, metrics] of Object.entries(blocks)) {
+      if (!stored[appName][blockType]) {
+        stored[appName][blockType] = { clicks: {}, shows: {}, revenue: {} };
+      }
+      for (const [metricName, dateValues] of Object.entries(metrics)) {
+        if (!dateValues || typeof dateValues !== 'object') continue;
+        if (!stored[appName][blockType][metricName]) {
+          stored[appName][blockType][metricName] = {};
+        }
+        Object.assign(stored[appName][blockType][metricName], dateValues);
       }
     }
   }
@@ -222,6 +251,7 @@ async function collectAll() {
   }
 
   let dailyData = await getDailyData();
+  let rsyaByBlock = await getRsyaByBlockType();
   const results = [];
   const total = apps.length;
   let workerTabId = null;
@@ -244,10 +274,16 @@ async function collectAll() {
       const rsyaResult = await ensureRsyaTabAndSend('collectRsyaApi', { token });
       if (rsyaResult?.success) {
         mergeRsyaData(dailyData, rsyaResult.data.apps);
+        // Сохраняем разбивку по типам блоков
+        if (rsyaResult.data.byBlockType) {
+          rsyaByBlock = mergeRsyaByBlockType(rsyaByBlock, rsyaResult.data.byBlockType);
+          await saveRsyaByBlockType(rsyaByBlock);
+        }
         results.push({
           app: `${rsyaResult.data.apps.length} РСЯ приложений`,
           success: true,
           source: 'api',
+          hasBlockType: !!rsyaResult.data.byBlockType,
         });
       } else {
         results.push({ app: 'РСЯ', success: false, error: rsyaResult?.error || 'нет ответа' });
@@ -523,7 +559,98 @@ function formatMarkdown(dailyData, apps) {
 }
 
 // ═══════════════════════════════════════════════════════════
-//  Обработчик сообщений от popup
+//  Дашборд: получение данных для отдельной страницы
+// ═══════════════════════════════════════════════════════════
+
+async function getDashboardData(payload) {
+  const { platform, appId, dateFrom, dateTo, includeBlockType } = payload;
+  const dailyData = await getDailyData();
+  const rsyaByBlock = await getRsyaByBlockType();
+  const apps = await getApps();
+
+  // Фильтр по платформе
+  let platformData = dailyData;
+  if (platform && platform !== 'all') {
+    platformData = { [platform]: dailyData[platform] || {} };
+  }
+
+  // Фильтр по приложению
+  if (appId) {
+    const filtered = {};
+    for (const [plat, platData] of Object.entries(platformData)) {
+      if (platData[appId]) {
+        filtered[plat] = { [appId]: platData[appId] };
+      }
+    }
+    platformData = filtered;
+  }
+
+  // Фильтр по датам
+  if (dateFrom || dateTo) {
+    const filtered = {};
+    for (const [plat, platData] of Object.entries(platformData)) {
+      filtered[plat] = {};
+      for (const [aid, metrics] of Object.entries(platData)) {
+        filtered[plat][aid] = {};
+        for (const [metric, dateVals] of Object.entries(metrics)) {
+          const filteredVals = {};
+          for (const [d, v] of Object.entries(dateVals)) {
+            if (dateFrom && d < dateFrom) continue;
+            if (dateTo && d > dateTo) continue;
+            filteredVals[d] = v;
+          }
+          if (Object.keys(filteredVals).length > 0) {
+            filtered[plat][aid][metric] = filteredVals;
+          }
+        }
+        if (Object.keys(filtered[plat][aid]).length === 0) {
+          delete filtered[plat][aid];
+        }
+      }
+      if (Object.keys(filtered[plat]).length === 0) {
+        delete filtered[plat];
+      }
+    }
+    platformData = filtered;
+  }
+
+  // Данные по типам блоков для дашборда
+  let blockTypeData = null;
+  if (includeBlockType && rsyaByBlock) {
+    blockTypeData = {};
+    for (const [appName, blocks] of Object.entries(rsyaByBlock)) {
+      // Фильтр по appId (для РСЯ appId = имя приложения)
+      if (appId && appName !== appId) continue;
+
+      blockTypeData[appName] = {};
+      for (const [btName, metrics] of Object.entries(blocks)) {
+        const filteredMetrics = {};
+        for (const [metric, dateVals] of Object.entries(metrics)) {
+          const filteredVals = {};
+          for (const [d, v] of Object.entries(dateVals)) {
+            if (dateFrom && d < dateFrom) continue;
+            if (dateTo && d > dateTo) continue;
+            filteredVals[d] = v;
+          }
+          if (Object.keys(filteredVals).length > 0) {
+            filteredMetrics[metric] = filteredVals;
+          }
+        }
+        if (Object.keys(filteredMetrics).length > 0) {
+          blockTypeData[appName][btName] = filteredMetrics;
+        }
+      }
+      if (Object.keys(blockTypeData[appName]).length === 0) {
+        delete blockTypeData[appName];
+      }
+    }
+  }
+
+  return { dailyData: platformData, byBlockType: blockTypeData, apps };
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Обработчик сообщений от popup / dashboard
 // ═══════════════════════════════════════════════════════════
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -567,6 +694,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
                 const dailyData = await getDailyData();
                 mergeRsyaData(dailyData, result.data.apps);
                 await saveDailyData(dailyData);
+                // Сохраняем разбивку по типам блоков
+                if (result.data.byBlockType) {
+                  let rsyaByBlock = await getRsyaByBlockType();
+                  rsyaByBlock = mergeRsyaByBlockType(rsyaByBlock, result.data.byBlockType);
+                  await saveRsyaByBlockType(rsyaByBlock);
+                }
               }
               sendResponse(result || { success: false, error: 'нет ответа от content script' });
             } catch (e) {
@@ -609,7 +742,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       return true;
 
     case 'clearData':
-      chrome.storage.local.set({ [KEYS.DATA]: {} }).then(() => {
+      chrome.storage.local.set({ [KEYS.DATA]: {}, [KEYS.RSYA_BY_BLOCK]: {} }).then(() => {
         chrome.action.setBadgeText({ text: '' });
         sendResponse({ success: true });
       });
@@ -686,6 +819,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
     case 'getRsyaToken': {
       getRsyaToken().then(sendResponse);
+      return true;
+    }
+
+    // ── Dashboard: получить отфильтрованные данные ──
+    case 'getDashboardData': {
+      getDashboardData(msg.data || {}).then(sendResponse);
       return true;
     }
   }

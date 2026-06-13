@@ -15,6 +15,7 @@
     "*://play.google.com/console/*",
     "*://partner.yandex.ru/*"
   ],
+  "options_page": "dashboard/dashboard.html",
   "action": {
     "default_popup": "popup/popup.html",
     "default_title": "App Metrics Harvester"

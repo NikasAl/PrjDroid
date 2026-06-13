@@ -71,7 +71,6 @@ if (window.__amhRsyaLoaded) {
       addLog('start', token ? `Token (${token.length} chars)` : 'No token');
 
       // ── 1. tree.json ──
-      // tree.json может не иметь поля result — проверяем data.tree напрямую
       const treeResp = await apiFetch('tree.json', {}, token);
       const tree = treeResp.data?.tree;
       if (!tree || !Array.isArray(tree) || tree.length === 0) {
@@ -83,27 +82,39 @@ if (window.__amhRsyaLoaded) {
       }
 
       const node = tree[0];
-      const ef = node.entity_fields || [];
+      const ef = node.entity_filter_simple_fields?.[0] || [];
       const mf = node.fields || [];
       addLog('tree', `${ef.length} entity fields, ${mf.length} metrics`);
 
+      // Логируем все entity fields для отладки
+      addLog('entity-fields', ef.map(f => `${f.name} (${f.label})`).join(', '));
+
       // ── 2. Ищем нужные поля ──
-      const appNameField = findFieldId(ef, ['page_caption'], ['название сайта', 'название приложения']);
+      const appNameField = 'page_caption';
+      const blockTypeField = 'block_type'; // Тип блока: Баннер, Межстраничная, С вознаграждением
+
+      // Проверяем что нужные entity fields доступны
+      const efNames = ef.map(f => f.name);
+      if (!efNames.includes(appNameField)) {
+        addLog('warn', `entity field "${appNameField}" не найден, доступные: ${efNames.join(', ')}`);
+      }
+      const hasBlockType = efNames.includes(blockTypeField);
+      addLog('block-type-field', hasBlockType ? `Найден: ${blockTypeField}` : `НЕ найден: ${blockTypeField}`);
+
+      // Метрики
       const revenueField = findFieldId(mf, ['partner_wo_nds'], ['вознаграждение', 'доход']);
       const showsField = findFieldId(mf, ['shows'], ['видимые показы']);
-      const impressionsField = findFieldId(mf, ['impressions'], ['показы']);
       const clicksField = findFieldId(mf, ['clicks'], ['клик']);
-
-      const showField = showsField || impressionsField;
+      const showField = showsField;
 
       addLog('fields', JSON.stringify({
-        app: appNameField, rev: revenueField, show: showField, clicks: clicksField,
+        app: appNameField, blockType: blockTypeField, rev: revenueField,
+        show: showField, clicks: clicksField, hasBlockType,
       }));
 
-      if (!appNameField) throw new Error('Не найдено поле page_caption');
       if (!revenueField && !showField) throw new Error('Не найдены метрики');
 
-      // ── 3. get.json ──
+      // ── 3. get.json — основные данные (по приложениям) ──
       const entityFields = [appNameField];
       const metricFields = [revenueField, showField, clicksField].filter(Boolean);
 
@@ -124,7 +135,7 @@ if (window.__amhRsyaLoaded) {
       const points = data.data?.points || [];
       addLog('got-points', `${points.length} точек`);
 
-      // ── 4. Группируем ──
+      // ── 4. Группируем основные данные ──
       const appsMap = {};
 
       for (const pt of points) {
@@ -162,6 +173,64 @@ if (window.__amhRsyaLoaded) {
         }
       }
 
+      // ── 5. get.json — данные по типам блоков ──
+      let byBlockType = null;
+      if (hasBlockType) {
+        addLog('block-type-fetch', 'Запрос данных по типам блоков...');
+        const btData = await apiFetch('get.json', {
+          dimension_field: 'date|day',
+          period: '90days',
+          entity_field: [appNameField, blockTypeField],
+          field: metricFields,
+        }, token);
+
+        if (btData.result !== 'error' && !btData.errors) {
+          const btPoints = btData.data?.points || [];
+          addLog('block-type-points', `${btPoints.length} точек по блокам`);
+
+          // Группируем: app -> blockType -> date -> { clicks, shows, revenue }
+          const btMap = {};
+          for (const pt of btPoints) {
+            const dims = pt.dimensions || {};
+            const measures = pt.measures?.[0] || {};
+            const dateArr = dims.date;
+            if (!dateArr?.[0]) continue;
+            const date = dateArr[0];
+            const appName = String(dims[appNameField] || 'Unknown');
+            // block_type приходит как массив, например ["App: Баннер"]
+            const btRaw = dims[blockTypeField];
+            const btName = Array.isArray(btRaw) ? btRaw[0] : String(btRaw || 'Unknown');
+
+            if (!btMap[appName]) btMap[appName] = {};
+            if (!btMap[appName][btName]) btMap[appName][btName] = { clicks: {}, shows: {}, revenue: {} };
+
+            const bt = btMap[appName][btName];
+            if (clicksField && typeof measures[clicksField] === 'number') {
+              bt.clicks[date] = (bt.clicks[date] || 0) + measures[clicksField];
+            }
+            if (showField && typeof measures[showField] === 'number') {
+              bt.shows[date] = (bt.shows[date] || 0) + measures[showField];
+            }
+            if (revenueField && typeof measures[revenueField] === 'number') {
+              bt.revenue[date] = (bt.revenue[date] || 0) + measures[revenueField];
+            }
+          }
+
+          // Упрощаем имена типов блоков (убираем префикс "App: ")
+          const cleanBlockType = (name) => name.replace(/^App:\s*/, '');
+          byBlockType = {};
+          for (const [appName, blocks] of Object.entries(btMap)) {
+            byBlockType[appName] = {};
+            for (const [btName, metrics] of Object.entries(blocks)) {
+              byBlockType[appName][cleanBlockType(btName)] = metrics;
+            }
+          }
+          addLog('block-type-done', `${Object.keys(byBlockType).length} apps с разбивкой`);
+        } else {
+          addLog('block-type-error', btData.errors || 'error');
+        }
+      }
+
       const apps = Object.entries(appsMap).map(([name, m]) => ({
         appId: name,
         name: name,
@@ -169,11 +238,19 @@ if (window.__amhRsyaLoaded) {
         metrics: { revenue: m.revenue, impressions: m.impressions, clicks: m.clicks, ecpm: m.ecpm },
       }));
 
-      addLog('done', `${apps.length} apps, ${points.length} points`);
+      addLog('done', `${apps.length} apps, ${points.length} points, byBlockType=${!!byBlockType}`);
 
       return {
         success: true,
-        data: { platform: 'rsya', timestamp: new Date().toISOString(), dateRange: null, apps, _source: 'api', _debugLog: log },
+        data: {
+          platform: 'rsya',
+          timestamp: new Date().toISOString(),
+          dateRange: null,
+          apps,
+          byBlockType,
+          _source: 'api',
+          _debugLog: log,
+        },
       };
     } catch (e) {
       addLog('error', e.message);

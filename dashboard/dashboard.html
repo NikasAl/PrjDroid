@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>App Metrics Harvester — Дашборд</title>
+  <link rel="stylesheet" href="dashboard.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-left">
+        <h1>App Metrics Harvester</h1>
+        <span class="header-sub">Накопленные данные и аналитика</span>
+      </div>
+      <div class="header-actions">
+        <button id="btn-collect" class="btn btn-primary">Собрать данные</button>
+        <button id="btn-copy-app" class="btn btn-accent" disabled>Копировать данные приложения</button>
+      </div>
+    </header>
+
+    <!-- Фильтры -->
+    <section class="filters">
+      <div class="filter-group">
+        <label>Приложение</label>
+        <select id="f-app">
+          <option value="">Все приложения</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label>Период с</label>
+        <input id="f-date-from" type="date" />
+      </div>
+      <div class="filter-group">
+        <label>по</label>
+        <input id="f-date-to" type="date" />
+      </div>
+      <div class="filter-group">
+        <label>&nbsp;</label>
+        <button id="btn-apply" class="btn btn-ghost">Применить</button>
+      </div>
+      <div class="filter-group">
+        <label>&nbsp;</label>
+        <div id="collect-status" class="collect-status"></div>
+      </div>
+    </section>
+
+    <!-- Сводная карточка по выбранному приложению -->
+    <section id="summary-cards" class="summary-cards"></section>
+
+    <!-- Таблицы по платформам -->
+    <main id="tables-container">
+      <p class="empty-state">Загрузка данных...</p>
+    </main>
+
+    <!-- РСЯ: Разбивка по типам блоков -->
+    <section id="block-type-section" class="block-type-section hidden">
+      <h2 class="section-title">РСЯ — Клики по типам блоков</h2>
+      <div class="block-type-tabs">
+        <button class="bt-tab active" data-bt="all">Все</button>
+      </div>
+      <div id="block-type-tables"></div>
+    </section>
+  </div>
+
+  <script src="dashboard.js"></script>
+</body>
+</html>

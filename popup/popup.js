@@ -29,6 +29,8 @@ const el = {
   rsyaStatus: $('#rsya-status'),
   fRsyaToken: $('#f-rsya-token'),
   btnSaveToken: $('#btn-save-token'),
+  // Dashboard
+  btnDashboard: $('#btn-dashboard'),
 };
 
 // ═══════════════════════════════════════════════════════════
@@ -85,6 +87,10 @@ function bindEvents() {
   // РСЯ API
   el.btnTestRsya.addEventListener('click', testRsyaApi);
   el.btnSaveToken.addEventListener('click', saveRsyaToken);
+  // Dashboard
+  el.btnDashboard.addEventListener('click', () => {
+    chrome.runtime.openOptionsPage();
+  });
 }
 
 // ═══════════════════════════════════════════════════════════
