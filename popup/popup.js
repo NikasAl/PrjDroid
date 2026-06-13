@@ -31,6 +31,15 @@ const el = {
   btnSaveToken: $('#btn-save-token'),
   // Dashboard
   btnDashboard: $('#btn-dashboard'),
+  // Extra fields
+  btnToggleExtra: $('#btn-toggle-extra'),
+  extraFields: $('#extra-fields'),
+  fGroupId: $('#f-group-id'),
+  fRustoreUrl: $('#f-rustore-url'),
+  fGpUrl: $('#f-gp-url'),
+  fRepoUrl: $('#f-repo-url'),
+  groupList: $('#group-list'),
+  formMode: $('#form-mode'),
 };
 
 // ═══════════════════════════════════════════════════════════
@@ -39,6 +48,7 @@ const el = {
 
 let apps = [];
 let dailyData = {};
+let editingAppId = null; // id редактируемого приложения (null = добавление)
 
 // ═══════════════════════════════════════════════════════════
 //  Init
@@ -52,14 +62,12 @@ async function init() {
   updateButtons();
   bindEvents();
 
-  // Проверить статус сбора
   const status = await sendMsg('getStatus');
   if (status && status.status === 'collecting') {
     showStatus('collecting', `Сбор: ${status.current}/${status.total} — ${status.appName}...`);
     pollStatus();
   }
 
-  // Загрузить сохранённый РСЯ токен
   const tokenResp = await sendMsg('getRsyaToken');
   if (tokenResp) {
     el.fRsyaToken.value = tokenResp.token || '';
@@ -71,12 +79,9 @@ async function init() {
 // ═══════════════════════════════════════════════════════════
 
 function bindEvents() {
-  el.btnAdd.addEventListener('click', toggleAddForm);
+  el.btnAdd.addEventListener('click', () => openForm());
   el.btnScanRuStore.addEventListener('click', scanRuStoreApps);
-  el.btnCancelAdd.addEventListener('click', () => {
-    el.addForm.classList.add('hidden');
-    clearForm();
-  });
+  el.btnCancelAdd.addEventListener('click', closeForm);
   el.btnSaveApp.addEventListener('click', saveApp);
   el.fPlatform.addEventListener('change', autofillUrl);
   el.fAppId.addEventListener('input', autofillUrl);
@@ -84,24 +89,54 @@ function bindEvents() {
   el.btnCollectCurrent.addEventListener('click', collectCurrentPage);
   el.btnExport.addEventListener('click', exportMarkdown);
   el.btnClear.addEventListener('click', clearData);
-  // РСЯ API
   el.btnTestRsya.addEventListener('click', testRsyaApi);
   el.btnSaveToken.addEventListener('click', saveRsyaToken);
-  // Dashboard
-  el.btnDashboard.addEventListener('click', () => {
-    chrome.runtime.openOptionsPage();
+  el.btnDashboard.addEventListener('click', () => chrome.runtime.openOptionsPage());
+  el.btnToggleExtra.addEventListener('click', () => {
+    el.extraFields.classList.toggle('hidden');
+    el.btnToggleExtra.textContent = el.extraFields.classList.contains('hidden') ? 'Доп. поля ▾' : 'Доп. поля ▴';
   });
 }
 
 // ═══════════════════════════════════════════════════════════
-//  Приложения: CRUD
+//  Форма: открытие / закрытие / сохранение
 // ═══════════════════════════════════════════════════════════
 
-function toggleAddForm() {
-  el.addForm.classList.toggle('hidden');
-  if (!el.addForm.classList.contains('hidden')) {
-    el.fName.focus();
+function openForm(appId) {
+  editingAppId = appId || null;
+  populateGroupDatalist();
+
+  if (editingAppId) {
+    // Режим редактирования
+    const app = apps.find(a => a.id === editingAppId);
+    if (!app) return;
+    el.fName.value = app.name || '';
+    el.fPlatform.value = app.platform || 'rustore';
+    el.fAppId.value = app.appId || '';
+    el.fUrl.value = app.url || '';
+    el.fGroupId.value = app.groupId || '';
+    el.fRustoreUrl.value = app.rustoreUrl || '';
+    el.fGpUrl.value = app.googlePlayUrl || '';
+    el.fRepoUrl.value = app.repoUrl || '';
+    el.formMode.textContent = 'Редактирование';
+    el.btnSaveApp.textContent = 'Обновить';
+  } else {
+    // Режим добавления
+    clearForm();
+    el.formMode.textContent = '';
+    el.btnSaveApp.textContent = 'Сохранить';
   }
+
+  el.addForm.classList.remove('hidden');
+  el.fName.focus();
+}
+
+function closeForm() {
+  el.addForm.classList.add('hidden');
+  el.extraFields.classList.add('hidden');
+  el.btnToggleExtra.textContent = 'Доп. поля ▾';
+  clearForm();
+  editingAppId = null;
 }
 
 function clearForm() {
@@ -109,17 +144,30 @@ function clearForm() {
   el.fPlatform.value = 'rustore';
   el.fAppId.value = '';
   el.fUrl.value = '';
+  el.fGroupId.value = '';
+  el.fRustoreUrl.value = '';
+  el.fGpUrl.value = '';
+  el.fRepoUrl.value = '';
+  el.formMode.textContent = '';
+  el.btnSaveApp.textContent = 'Сохранить';
+}
+
+function populateGroupDatalist() {
+  const groups = new Set();
+  for (const a of apps) {
+    if (a.groupId) groups.add(a.groupId);
+  }
+  el.groupList.innerHTML = [...groups].map(g => `<option value="${esc(g)}">`).join('');
 }
 
 function autofillUrl() {
   const platform = el.fPlatform.value;
   const appId = el.fAppId.value.trim();
   if (!appId) return;
-
   const urls = {
     rustore: `https://console.rustore.ru/apps/${appId}/statistics`,
-    googleplay: '', // Пользователь вводит вручную
-    rsya: '', // Пользователь вводит вручную
+    googleplay: '',
+    rsya: '',
   };
   if (urls[platform] && !el.fUrl.value) {
     el.fUrl.value = urls[platform];
@@ -131,6 +179,10 @@ async function saveApp() {
   const platform = el.fPlatform.value;
   const appId = el.fAppId.value.trim();
   let url = el.fUrl.value.trim();
+  const groupId = el.fGroupId.value.trim();
+  const rustoreUrl = el.fRustoreUrl.value.trim();
+  const googlePlayUrl = el.fGpUrl.value.trim();
+  const repoUrl = el.fRepoUrl.value.trim();
 
   if (!name) return alert('Введите название приложения');
   if (!appId) return alert('Введите App ID');
@@ -143,11 +195,19 @@ async function saveApp() {
     }
   }
 
-  apps.push({ id: Date.now().toString(), name, platform, appId, url });
-  await sendMsg('saveApps', { apps });
+  if (editingAppId) {
+    // Обновляем существующее
+    const idx = apps.findIndex(a => a.id === editingAppId);
+    if (idx >= 0) {
+      apps[idx] = { ...apps[idx], name, platform, appId, url, groupId, rustoreUrl, googlePlayUrl, repoUrl };
+    }
+  } else {
+    // Добавляем новое
+    apps.push({ id: Date.now().toString(), name, platform, appId, url, groupId, rustoreUrl, googlePlayUrl, repoUrl });
+  }
 
-  el.addForm.classList.add('hidden');
-  clearForm();
+  await sendMsg('saveApps', { apps });
+  closeForm();
   renderAppList();
   updateButtons();
 }
@@ -165,26 +225,27 @@ function renderAppList() {
     return;
   }
 
-  const platformLabel = {
-    rustore: 'RuStore',
-    googleplay: 'GP',
-    rsya: 'РСЯ',
-  };
+  const platformLabel = { rustore: 'RuStore', googleplay: 'GP', rsya: 'РСЯ' };
 
   el.appList.innerHTML = apps
-    .map(
-      (a) => `
+    .map((a) => {
+      const groupTag = a.groupId ? `<span class="group-tag" title="Группа: ${esc(a.groupId)}">🔗</span>` : '';
+      return `
     <div class="app-item">
       <span class="platform-badge ${a.platform}">${platformLabel[a.platform] || a.platform}</span>
-      <span class="app-name" title="${a.name}">${esc(a.name)}</span>
-      <span class="app-id">${esc(a.appId)}</span>
+      <span class="app-name" title="${esc(a.name)}">${esc(a.name)}</span>
+      ${groupTag}
+      <button class="btn-icon btn-edit" data-edit="${a.id}" title="Редактировать">✎</button>
       <button class="btn-icon" data-remove="${a.id}" title="Удалить">&times;</button>
-    </div>`
-    )
+    </div>`;
+    })
     .join('');
 
   el.appList.querySelectorAll('[data-remove]').forEach((btn) => {
     btn.addEventListener('click', () => removeApp(btn.dataset.remove));
+  });
+  el.appList.querySelectorAll('[data-edit]').forEach((btn) => {
+    btn.addEventListener('click', () => openForm(btn.dataset.edit));
   });
 }
 
@@ -259,7 +320,6 @@ async function collectCurrentPage() {
   try {
     const result = await sendMsg('collectCurrentPage');
     if (result.success) {
-      // Выводим debug-лог в консоль popup
       if (result.data?._debugLog) {
         console.log('[AMH Debug Log]', result.data._debugLog);
       }
@@ -297,10 +357,7 @@ function pollStatus() {
         }
       }
     } else {
-      showStatus(
-        'collecting',
-        `${status.current}/${status.total} — ${status.appName}...`
-      );
+      showStatus('collecting', `${status.current}/${status.total} — ${status.appName}...`);
     }
   }, 1500);
 }
@@ -323,7 +380,6 @@ function renderDataSummary() {
     return a ? a.name : appId;
   };
 
-  // Собрать все даты
   const dates = new Set();
   for (const platform of Object.values(dailyData)) {
     for (const appData of Object.values(platform)) {
@@ -340,18 +396,12 @@ function renderDataSummary() {
     return;
   }
 
-  // Показать последние 7 дней
   const recent = sortedDates.slice(-7);
-  const fmtDate = (d) => {
-    const [, m, day] = d.split('-');
-    return `${day}.${m}`;
-  };
-  const num = (v) =>
-    v !== undefined && v !== null ? Number(v).toLocaleString('ru-RU') : '—';
+  const fmtDate = (d) => { const [, m, day] = d.split('-'); return `${day}.${m}`; };
+  const num = (v) => v !== undefined && v !== null ? Number(v).toLocaleString('ru-RU') : '—';
 
   let html = '';
 
-  // RuStore
   if (dailyData.rustore) {
     const ids = Object.keys(dailyData.rustore);
     if (ids.length > 0) {
@@ -363,7 +413,6 @@ function renderDataSummary() {
     }
   }
 
-  // Google Play
   if (dailyData.googleplay) {
     const ids = Object.keys(dailyData.googleplay);
     if (ids.length > 0) {
@@ -375,7 +424,6 @@ function renderDataSummary() {
     }
   }
 
-  // РСЯ
   if (dailyData.rsya) {
     const ids = Object.keys(dailyData.rsya);
     if (ids.length > 0) {
@@ -385,15 +433,11 @@ function renderDataSummary() {
       html += '<h3>РСЯ — Клики</h3>';
       html += buildMiniTable(recent, ids, 'clicks', 'rsya', names, fmtDate, num);
       html += '<h3>РСЯ — Доход</h3>';
-      html += buildMiniTable(
-        recent, ids, 'revenue', 'rsya', names, fmtDate,
-        (v) => (v !== undefined && v !== null ? Number(v).toLocaleString('ru-RU', { minimumFractionDigits: 2 }) + ' ₽' : '—')
-      );
+      html += buildMiniTable(recent, ids, 'revenue', 'rsya', names, fmtDate,
+        (v) => (v !== undefined && v !== null ? Number(v).toLocaleString('ru-RU', { minimumFractionDigits: 2 }) + ' ₽' : '—'));
       html += '<h3>РСЯ — eCPM</h3>';
-      html += buildMiniTable(
-        recent, ids, 'ecpm', 'rsya', names, fmtDate,
-        (v) => (v !== undefined && v !== null ? Number(v).toLocaleString('ru-RU', { minimumFractionDigits: 2 }) + ' ₽' : '—')
-      );
+      html += buildMiniTable(recent, ids, 'ecpm', 'rsya', names, fmtDate,
+        (v) => (v !== undefined && v !== null ? Number(v).toLocaleString('ru-RU', { minimumFractionDigits: 2 }) + ' ₽' : '—'));
     }
   }
 
@@ -428,10 +472,7 @@ async function exportMarkdown() {
       const origText = el.btnExport.textContent;
       el.btnExport.textContent = 'Скопировано!';
       el.btnExport.classList.add('btn-primary');
-      setTimeout(() => {
-        el.btnExport.textContent = origText;
-        el.btnExport.classList.remove('btn-primary');
-      }, 1500);
+      setTimeout(() => { el.btnExport.textContent = origText; el.btnExport.classList.remove('btn-primary'); }, 1500);
     }
   } catch (e) {
     alert('Ошибка копирования: ' + e.message);
@@ -454,9 +495,7 @@ async function clearData() {
 function sendMsg(action, data) {
   const msg = data !== undefined ? { action, data } : { action };
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage(msg, (resp) => {
-      resolve(resp);
-    });
+    chrome.runtime.sendMessage(msg, (resp) => resolve(resp));
   });
 }
 
@@ -494,30 +533,17 @@ async function testRsyaApi() {
     const result = await sendMsg('testRsyaApi');
 
     if (result.success) {
-      let info = `✓ tree.json ответил! result="${result.result}", узлов: ${result.treeLength}`;
+      let info = `✓ tree.json ответил! узлов: ${result.treeLength}`;
       if (result.treeTitle) info += `\nУзел: "${result.treeTitle}"`;
-      // Показываем префикс raw ответа для диагностики
-      if (result.rawPreview) {
-        console.log('[AMH] tree.json raw:', result.rawPreview);
-        info += `\n(подробнее — в консоли popup: F12)`;
-      }
-
+      if (result.rawPreview) console.log('[AMH] tree.json raw:', result.rawPreview);
       el.rsyaStatus.className = 'rsya-status ok';
       el.rsyaStatus.textContent = info;
     } else {
       const err = result.error || 'Неизвестная ошибка';
       let hint = '';
-      if (err.includes('HTTP 401') || err.includes('HTTP 403')) {
-        hint = '\n→ Нужен OAuth-токен. Вставьте его в поле ниже.';
-      } else if (err.includes('HTTP 429')) {
-        hint = '\n→ Слишком много запросов. Подождите.';
-      } else if (err.includes('Failed to fetch') || err.includes('NetworkError')) {
-        hint = '\n→ Ошибка сети.';
-      } else if (result.rawPreview) {
-        console.log('[AMH] tree.json raw response:', result.rawPreview);
-        hint = '\n(сырой ответ — в консоли popup: F12)';
-      }
-
+      if (err.includes('HTTP 401') || err.includes('HTTP 403')) hint = '\n→ Нужен OAuth-токен.';
+      else if (err.includes('HTTP 429')) hint = '\n→ Слишком много запросов.';
+      else if (err.includes('Failed to fetch')) hint = '\n→ Ошибка сети.';
       el.rsyaStatus.className = 'rsya-status fail';
       el.rsyaStatus.textContent = `✗ ${err}${hint}`;
     }

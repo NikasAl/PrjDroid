@@ -563,24 +563,26 @@ function formatMarkdown(dailyData, apps) {
 // ═══════════════════════════════════════════════════════════
 
 async function getDashboardData(payload) {
-  const { platform, appId, dateFrom, dateTo, includeBlockType } = payload;
+  const { appIds, dateFrom, dateTo, includeBlockType } = payload;
   const dailyData = await getDailyData();
   const rsyaByBlock = await getRsyaByBlockType();
   const apps = await getApps();
 
-  // Фильтр по платформе
+  // Фильтр по списку appIds (от группового селекта дашборда)
   let platformData = dailyData;
-  if (platform && platform !== 'all') {
-    platformData = { [platform]: dailyData[platform] || {} };
-  }
-
-  // Фильтр по приложению
-  if (appId) {
+  if (appIds && Array.isArray(appIds) && appIds.length > 0) {
+    const allowedMap = new Map();
+    for (const { platform, appId } of appIds) {
+      allowedMap.set(`${platform}:${appId}`, true);
+    }
     const filtered = {};
     for (const [plat, platData] of Object.entries(platformData)) {
-      if (platData[appId]) {
-        filtered[plat] = { [appId]: platData[appId] };
+      filtered[plat] = {};
+      for (const [aid, metrics] of Object.entries(platData)) {
+        if (!allowedMap.has(`${plat}:${aid}`)) continue;
+        filtered[plat][aid] = metrics;
       }
+      if (Object.keys(filtered[plat]).length === 0) delete filtered[plat];
     }
     platformData = filtered;
   }
@@ -617,10 +619,18 @@ async function getDashboardData(payload) {
   // Данные по типам блоков для дашборда
   let blockTypeData = null;
   if (includeBlockType && rsyaByBlock) {
+    // Собираем допустимые РСЯ appIds
+    const allowedRsyaIds = new Set();
+    if (appIds && Array.isArray(appIds)) {
+      for (const { platform, appId } of appIds) {
+        if (platform === 'rsya') allowedRsyaIds.add(appId);
+      }
+    }
+
     blockTypeData = {};
     for (const [appName, blocks] of Object.entries(rsyaByBlock)) {
-      // Фильтр по appId (для РСЯ appId = имя приложения)
-      if (appId && appName !== appId) continue;
+      // Фильтр по списку appIds (только РСЯ)
+      if (allowedRsyaIds.size > 0 && !allowedRsyaIds.has(appName)) continue;
 
       blockTypeData[appName] = {};
       for (const [btName, metrics] of Object.entries(blocks)) {

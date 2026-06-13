@@ -16,7 +16,6 @@
       </div>
       <div class="header-actions">
         <button id="btn-collect" class="btn btn-primary">Собрать данные</button>
-        <button id="btn-copy-app" class="btn btn-accent" disabled>Копировать данные приложения</button>
       </div>
     </header>
 
@@ -46,7 +45,7 @@
       </div>
     </section>
 
-    <!-- Сводная карточка по выбранному приложению -->
+    <!-- Сводные карточки -->
     <section id="summary-cards" class="summary-cards"></section>
 
     <!-- Таблицы по платформам -->
@@ -61,6 +60,17 @@
         <button class="bt-tab active" data-bt="all">Все</button>
       </div>
       <div id="block-type-tables"></div>
+    </section>
+
+    <!-- Генератор промпта для LLM -->
+    <section id="prompt-section" class="prompt-section hidden">
+      <h2 class="section-title">Промпт для анализа LLM</h2>
+      <div class="prompt-actions">
+        <button id="btn-gen-prompt" class="btn btn-primary btn-sm">Сгенерировать промпт</button>
+        <button id="btn-copy-prompt" class="btn btn-accent btn-sm" disabled>Копировать</button>
+      </div>
+      <textarea id="prompt-text" class="prompt-textarea" placeholder="Выберите приложение и нажмите «Сгенерировать промпт»"></textarea>
+      <p class="prompt-hint">Промпт редактируемый. После генерации вы можете изменить его перед копированием.</p>
     </section>
   </div>
 
