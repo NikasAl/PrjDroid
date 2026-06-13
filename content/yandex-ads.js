@@ -1,4 +1,6 @@
-// content/yandex-ads.js — РСЯ: извлечение токена + DOM-парсинг (fallback)
+// content/yandex-ads.js — РСЯ: API-запросы (same-origin) + извлечение токена + DOM-парсинг (fallback)
+// Важно: все fetch к partner.yandex.ru идут ЗДЕСЬ, т.к. content script выполняется
+// в контексте partner.yandex.ru и имеет доступ к cookies этого домена.
 
 (function () {
   'use strict';
@@ -12,7 +14,419 @@
     console.log(`[AMH-RSYA ${step}]`, detail);
   }
 
-  // ── Хелперы ──
+  function clearLog() {
+    LOG.length = 0;
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  //  РСЯ API — запросы с same-origin (cookies включены автоматически)
+  // ═══════════════════════════════════════════════════════════
+
+  async function rsyaApiFetch(endpoint, params = {}, token = null) {
+    const url = new URL(`https://partner.yandex.ru/api/statistics2/${endpoint}`);
+    url.searchParams.set('lang', 'ru');
+
+    for (const [key, value] of Object.entries(params)) {
+      if (Array.isArray(value)) {
+        value.forEach((v) => url.searchParams.append(key, String(v)));
+      } else if (value !== undefined && value !== null) {
+        url.searchParams.set(key, String(value));
+      }
+    }
+
+    const headers = { Accept: 'application/json' };
+    if (token) {
+      headers['Authorization'] = `OAuth ${token}`;
+    }
+
+    // credentials: 'same-origin' — отправляет cookies partner.yandex.ru
+    // (в content script это дефолт, но явно для ясности)
+    const resp = await fetch(url.toString(), {
+      credentials: 'same-origin',
+      headers,
+    });
+
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => '');
+      throw new Error(`HTTP ${resp.status} — ${body.substring(0, 500)}`);
+    }
+
+    return resp.json();
+  }
+
+  /**
+   * Поиск ID поля по ключевым словам в label/title/id.
+   */
+  function findFieldId(fields, ...keywords) {
+    if (!fields || !Array.isArray(fields)) return null;
+    for (const f of fields) {
+      const haystack = ((f.label || '') + ' ' + (f.title || '') + ' ' + (f.id || '')).toLowerCase();
+      if (keywords.some((kw) => haystack.includes(kw.toLowerCase()))) return f.id;
+    }
+    return null;
+  }
+
+  /**
+   * Основной сборщик РСЯ через API.
+   * Выполняется в content script на partner.yandex.ru — имеет доступ к cookies.
+   */
+  async function collectRsyaViaApi(token = null) {
+    clearLog();
+
+    try {
+      log('api-start', token ? `Token длиной ${token.length}` : 'Без токена (cookies only)');
+
+      // ── 1. tree.json — обнаруживаем доступные поля ──
+      const treeResp = await rsyaApiFetch('tree.json', { pretty: 1 }, token);
+      log('tree-raw', JSON.stringify(treeResp).substring(0, 2000));
+
+      if (treeResp.result !== 'ok' || !treeResp.data?.tree?.length) {
+        const detail = treeResp.result
+          ? `result="${treeResp.result}", tree.length=${treeResp.data?.tree?.length || 0}`
+          : `result is falsy: "${treeResp.result}", keys: [${Object.keys(treeResp).join(', ')}]`;
+        throw new Error(`tree.json: ${detail}`);
+      }
+
+      const node = treeResp.data.tree[0];
+      const ef = node.entity_fields || [];
+      const mf = node.fields || [];
+
+      log('tree', `node="${node.id}" (${node.title}), entity_fields=${ef.length}, fields=${mf.length}`);
+
+      // ── 2. Обнаруживаем ID полей по названиям ──
+      const appIdField = findFieldId(ef, 'page id', 'page_id');
+      const appNameField = findFieldId(ef, 'название пейджа', 'page name', 'page caption', 'название блока');
+      const blockTypeField = findFieldId(ef, 'блочный уровень', 'block level', 'тип блока', 'block type', 'ad format', 'ad unit name', 'блок');
+
+      const revenueField = findFieldId(mf, 'вознаграждение', 'доход', 'revenue', 'partner_wo');
+      const showsField = findFieldId(mf, 'показы рекламы', 'показы в блок', 'shows');
+      const showsVisibleField = findFieldId(mf, 'видимые показы', 'visible shows', 'visible impressions');
+      const clicksField = findFieldId(mf, 'клик', 'click');
+      const ecpmField = findFieldId(mf, 'ecpm');
+
+      const effectiveShows = showsField || showsVisibleField;
+
+      log('fields', JSON.stringify({
+        entity: { appIdField, appNameField, blockTypeField },
+        metrics: { revenueField, showsField: effectiveShows, showsVisibleField, clicksField, ecpmField },
+      }));
+
+      if (!appIdField && !appNameField) {
+        throw new Error('Не найдены поля для идентификации приложения в tree.json');
+      }
+      if (!revenueField && !effectiveShows) {
+        throw new Error('Не найдены метрики (вознаграждение/показы) в tree.json');
+      }
+
+      // ── 3. Параметры запроса ──
+      const entityFields = [];
+      if (appIdField) entityFields.push(appIdField);
+      if (appNameField && appNameField !== appIdField) entityFields.push(appNameField);
+      const useBlockType = !!blockTypeField && blockTypeField !== appIdField && blockTypeField !== appNameField;
+      if (useBlockType) entityFields.push(blockTypeField);
+
+      const metricFields = [revenueField, effectiveShows, clicksField, ecpmField].filter(Boolean);
+
+      // ── 4. get.json с пагинацией ──
+      const allPoints = [];
+      let offset = 0;
+      const limit = 1000;
+      let pageNum = 0;
+
+      while (true) {
+        pageNum++;
+        const params = {
+          dimension_field: 'date|day',
+          period: '90days',
+          pretty: 1,
+          limits: JSON.stringify({ limit, offset }),
+          entity_field: entityFields,
+          field: metricFields,
+        };
+
+        const data = await rsyaApiFetch('get.json', params, token);
+
+        if (data.result !== 'ok') {
+          throw new Error(`get.json: result="${data.result}"`);
+        }
+
+        const points = data.data?.points || [];
+        allPoints.push(...points);
+
+        log('page', `${pageNum}: ${points.length} точек (всего: ${allPoints.length})`);
+
+        if (data.data?.is_last_page !== false || points.length === 0) break;
+        offset += limit;
+        if (pageNum >= 10) break;
+      }
+
+      log('total', `${allPoints.length} точек данных`);
+
+      // ── 5. Определяем ключи dimensions ──
+      let appNameKey = null;
+      let blockTypeKey = null;
+
+      for (const point of allPoints) {
+        const dims = point.dimensions || {};
+        for (const key of Object.keys(dims)) {
+          if (key === 'date') continue;
+          const val = dims[key];
+          if (typeof val === 'string' && val.length > 2 && !appNameKey) {
+            appNameKey = key;
+          } else if (typeof val === 'string' && val.length > 0 && appNameKey && key !== appNameKey && !blockTypeKey) {
+            blockTypeKey = key;
+          }
+        }
+        if (appNameKey) break;
+      }
+
+      log('keys', JSON.stringify({ appNameKey, blockTypeKey }));
+
+      // ── 6. Группируем по приложениям и датам ──
+      const appsMap = {};
+
+      for (const point of allPoints) {
+        const dims = point.dimensions || {};
+        const measures = point.measures?.[0] || {};
+
+        const dateArr = dims.date;
+        if (!dateArr?.[0]) continue;
+        const date = dateArr[0];
+
+        const appName = appNameKey ? String(dims[appNameKey] || 'Unknown') : 'Unknown';
+
+        if (!appsMap[appName]) {
+          appsMap[appName] = { revenue: {}, impressions: {}, clicks: {}, ecpm: {} };
+        }
+
+        const app = appsMap[appName];
+
+        if (revenueField && typeof measures[revenueField] === 'number') {
+          app.revenue[date] = (app.revenue[date] || 0) + measures[revenueField];
+        }
+        if (effectiveShows && typeof measures[effectiveShows] === 'number') {
+          app.impressions[date] = (app.impressions[date] || 0) + measures[effectiveShows];
+        }
+        if (clicksField && typeof measures[clicksField] === 'number') {
+          app.clicks[date] = (app.clicks[date] || 0) + measures[clicksField];
+        }
+      }
+
+      // ── 7. eCPM из revenue/impressions ──
+      for (const app of Object.values(appsMap)) {
+        for (const date of Object.keys(app.impressions)) {
+          const imp = app.impressions[date];
+          const rev = app.revenue[date];
+          if (imp > 0 && rev !== undefined) {
+            app.ecpm[date] = (rev / imp) * 1000;
+          }
+        }
+      }
+
+      // ── 8. Формируем результат ──
+      const apps = Object.entries(appsMap).map(([name, m]) => ({
+        appId: name,
+        name: name,
+        platform: 'rsya',
+        metrics: {
+          revenue: m.revenue,
+          impressions: m.impressions,
+          clicks: m.clicks,
+          ecpm: m.ecpm,
+        },
+      }));
+
+      log('done', `${apps.length} приложений через API`);
+
+      return {
+        success: true,
+        data: {
+          platform: 'rsya',
+          timestamp: new Date().toISOString(),
+          dateRange: null,
+          apps,
+          _source: 'api',
+          _debugLog: LOG,
+        },
+      };
+    } catch (e) {
+      log('error', e.message);
+      return {
+        success: false,
+        error: e.message,
+        _debugLog: LOG,
+        _source: 'api',
+      };
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  //  Извлечение OAuth-токена из контекста страницы
+  // ═══════════════════════════════════════════════════════════
+
+  function searchObjectForToken(obj, depth = 0, visited = new Set()) {
+    if (depth > 4 || !obj || typeof obj !== 'object') return null;
+    if (visited.has(obj)) return null;
+    visited.add(obj);
+
+    if (typeof obj === 'string') {
+      if (/^AQ[A-Za-z0-9_-]{20,}$/.test(obj)) return obj;
+    }
+
+    if (Array.isArray(obj)) {
+      for (const item of obj) {
+        const r = searchObjectForToken(item, depth + 1, visited);
+        if (r) return r;
+      }
+      return null;
+    }
+
+    for (const [key, val] of Object.entries(obj)) {
+      const kl = key.toLowerCase();
+      if (kl.includes('token') || kl.includes('oauth') || kl.includes('auth') || kl.includes('access')) {
+        if (typeof val === 'string' && val.length > 20 && /^[A-Za-z0-9_-]+$/.test(val)) {
+          return val;
+        }
+      }
+      if (typeof val === 'object' && val !== null) {
+        const r = searchObjectForToken(val, depth + 1, visited);
+        if (r) return r;
+      }
+    }
+    return null;
+  }
+
+  function extractTokenFromStorage() {
+    const candidates = [];
+
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key) continue;
+        try {
+          const val = localStorage.getItem(key);
+          if (!val) continue;
+          if (/^AQ[A-Za-z0-9_-]{20,}$/.test(val)) {
+            candidates.push({ source: `localStorage:${key}`, token: val });
+            continue;
+          }
+          try {
+            const parsed = JSON.parse(val);
+            const found = searchObjectForToken(parsed);
+            if (found) candidates.push({ source: `localStorage:${key}`, token: found });
+          } catch (_) {}
+        } catch (_) {}
+      }
+    } catch (_) {}
+
+    try {
+      for (let i = 0; i < sessionStorage.length; i++) {
+        const key = sessionStorage.key(i);
+        if (!key) continue;
+        try {
+          const val = sessionStorage.getItem(key);
+          if (!val) continue;
+          if (/^AQ[A-Za-z0-9_-]{20,}$/.test(val)) {
+            candidates.push({ source: `sessionStorage:${key}`, token: val });
+            continue;
+          }
+          try {
+            const parsed = JSON.parse(val);
+            const found = searchObjectForToken(parsed);
+            if (found) candidates.push({ source: `sessionStorage:${key}`, token: found });
+          } catch (_) {}
+        } catch (_) {}
+      }
+    } catch (_) {}
+
+    const globalKeys = [
+      '__INITIAL_STATE__', '__initialState__', '__APP_STATE__',
+      '__store__', '__redux__', '__NEXT_DATA__', '__props__',
+    ];
+    for (const gk of globalKeys) {
+      try {
+        const val = (window || {})[gk];
+        if (val) {
+          const found = searchObjectForToken(val);
+          if (found) candidates.push({ source: `window.${gk}`, token: found });
+        }
+      } catch (_) {}
+    }
+
+    try {
+      if (window.__REDUX_DEVTOOLS_EXTENSION__) {
+        const store = window.__store__ || window.store;
+        if (store?.getState) {
+          const found = searchObjectForToken(store.getState());
+          if (found) candidates.push({ source: 'redux.store', token: found });
+        }
+      }
+    } catch (_) {}
+
+    try {
+      const cookies = document.cookie.split(';');
+      for (const cookie of cookies) {
+        const [name, ...rest] = cookie.trim().split('=');
+        const val = rest.join('=');
+        if (/^AQ[A-Za-z0-9_-]{20,}$/.test(val)) {
+          candidates.push({ source: `cookie:${name}`, token: val });
+        }
+      }
+    } catch (_) {}
+
+    return candidates;
+  }
+
+  /**
+   * Monkey-patch fetch чтобы перехватить Authorization header из следующего API-запроса.
+   */
+  function interceptNextFetch(timeoutMs = 3000) {
+    return new Promise((resolve) => {
+      const origFetch = window.fetch;
+      let found = null;
+      let timer = setTimeout(() => {
+        window.fetch = origFetch;
+        resolve(found);
+      }, timeoutMs);
+
+      window.fetch = function (...args) {
+        const [, opts] = args;
+        const authHeader = opts?.headers?.Authorization || opts?.headers?.authorization;
+        if (authHeader && typeof authHeader === 'string') {
+          const match = authHeader.match(/OAuth\s+(.+)/i);
+          if (match?.[1]) {
+            found = match[1].trim();
+            clearTimeout(timer);
+            window.fetch = origFetch;
+            resolve(found);
+            return origFetch.apply(this, args);
+          }
+        }
+        if (opts?.headers instanceof Headers) {
+          const auth = opts.headers.get('Authorization') || opts.headers.get('authorization');
+          if (auth) {
+            const match = auth.match(/OAuth\s+(.+)/i);
+            if (match?.[1]) {
+              found = match[1].trim();
+              clearTimeout(timer);
+              window.fetch = origFetch;
+              resolve(found);
+              return origFetch.apply(this, args);
+            }
+          }
+        }
+        return origFetch.apply(this, args);
+      };
+
+      try {
+        window.dispatchEvent(new Event('resize'));
+      } catch (_) {}
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  //  DOM-парсер (fallback)
+  // ═══════════════════════════════════════════════════════════
 
   function parseNum(s) {
     if (!s || typeof s !== 'string') return 0;
@@ -48,227 +462,18 @@
       .replace(/&nbsp;/g, ' ').replace(/\u205f/g, ' ').replace(/\s+/g, ' ').trim();
   }
 
-  // ═══════════════════════════════════════════════════════════
-  //  Подход 2: Извлечение OAuth-токена из контекста страницы
-  // ═══════════════════════════════════════════════════════════
-
-  function searchObjectForToken(obj, depth = 0, visited = new Set()) {
-    if (depth > 4 || !obj || typeof obj !== 'object') return null;
-    if (visited.has(obj)) return null;
-    visited.add(obj);
-
-    // Прямое совпадение: строка похожа на OAuth-токен Яндекса
-    if (typeof obj === 'string') {
-      // Яндекс OAuth-токен: ~40+ символов, base64-like
-      if (/^AQ[A-Za-z0-9_-]{20,}$/.test(obj)) return obj;
-    }
-
-    if (Array.isArray(obj)) {
-      for (const item of obj) {
-        const r = searchObjectForToken(item, depth + 1, visited);
-        if (r) return r;
-      }
-      return null;
-    }
-
-    for (const [key, val] of Object.entries(obj)) {
-      const kl = key.toLowerCase();
-      // Ключ содержит указание на токен
-      if (kl.includes('token') || kl.includes('oauth') || kl.includes('auth') || kl.includes('access')) {
-        if (typeof val === 'string' && val.length > 20 && /^[A-Za-z0-9_-]+$/.test(val)) {
-          return val;
-        }
-      }
-      // Рекурсивный поиск в объектах
-      if (typeof val === 'object' && val !== null) {
-        const r = searchObjectForToken(val, depth + 1, visited);
-        if (r) return r;
-      }
-    }
-    return null;
-  }
-
-  function extractTokenFromStorage() {
-    const candidates = [];
-
-    // 1. localStorage
-    try {
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (!key) continue;
-        try {
-          const val = localStorage.getItem(key);
-          if (!val) continue;
-          // Прямое значение — токен
-          if (/^AQ[A-Za-z0-9_-]{20,}$/.test(val)) {
-            candidates.push({ source: `localStorage:${key}`, token: val });
-            continue;
-          }
-          // Попробуем распарсить как JSON и поискать внутри
-          try {
-            const parsed = JSON.parse(val);
-            const found = searchObjectForToken(parsed);
-            if (found) candidates.push({ source: `localStorage:${key}`, token: found });
-          } catch (_) {}
-        } catch (_) {}
-      }
-    } catch (_) {}
-
-    // 2. sessionStorage
-    try {
-      for (let i = 0; i < sessionStorage.length; i++) {
-        const key = sessionStorage.key(i);
-        if (!key) continue;
-        try {
-          const val = sessionStorage.getItem(key);
-          if (!val) continue;
-          if (/^AQ[A-Za-z0-9_-]{20,}$/.test(val)) {
-            candidates.push({ source: `sessionStorage:${key}`, token: val });
-            continue;
-          }
-          try {
-            const parsed = JSON.parse(val);
-            const found = searchObjectForToken(parsed);
-            if (found) candidates.push({ source: `sessionStorage:${key}`, token: found });
-          } catch (_) {}
-        } catch (_) {}
-      }
-    } catch (_) {}
-
-    // 3. Глобальные переменные (React state, Redux store, etc.)
-    const globalKeys = [
-      '__INITIAL_STATE__', '__initialState__', '__APP_STATE__',
-      '__store__', '__redux__', '__NEXT_DATA__', '__props__',
-    ];
-    for (const gk of globalKeys) {
-      try {
-        const val = (window || {})[gk];
-        if (val) {
-          const found = searchObjectForToken(val);
-          if (found) candidates.push({ source: `window.${gk}`, token: found });
-        }
-      } catch (_) {}
-    }
-
-    // 4. Redux store через __REDUX_DEVTOOLS_EXTENSION__
-    try {
-      if (window.__REDUX_DEVTOOLS_EXTENSION__) {
-        const store = window.__store__ || window.store;
-        if (store?.getState) {
-          const state = store.getState();
-          const found = searchObjectForToken(state);
-          if (found) candidates.push({ source: 'redux.store', token: found });
-        }
-      }
-    } catch (_) {}
-
-    // 5. Cookies — ищем токен в cookie
-    try {
-      const cookies = document.cookie.split(';');
-      for (const cookie of cookies) {
-        const [name, ...rest] = cookie.trim().split('=');
-        const val = rest.join('=');
-        if (/^AQ[A-Za-z0-9_-]{20,}$/.test(val)) {
-          candidates.push({ source: `cookie:${name}`, token: val });
-        }
-      }
-    } catch (_) {}
-
-    return candidates;
-  }
-
-  function extractTokenFromNetwork() {
-    // Ищем токен в Performance API — заголовки ответов
-    try {
-      const entries = performance.getEntriesByType('resource');
-      for (const entry of entries) {
-        if (entry.name.includes('/api/statistics2/') || entry.name.includes('partner.yandex.ru')) {
-          // К сожалению, Performance API не даёт заголовки запросов
-          // Но мы можем перехватить через override fetch
-        }
-      }
-    } catch (_) {}
-
-    // Альтернатива: перехват fetch на время следующего запроса
-    // Это сложнее — делаем через monkey-patching (см. ниже)
-    return null;
-  }
-
-  /**
-   * Агрессивный поиск: monkey-patch fetch на 3 секунды,
-   * чтобы перехватить следующий API-запрос дашборда и вытащить Authorization header.
-   */
-  function interceptNextFetch(timeoutMs = 3000) {
-    return new Promise((resolve) => {
-      const origFetch = window.fetch;
-      let found = null;
-      let timer = setTimeout(() => {
-        window.fetch = origFetch;
-        resolve(found);
-      }, timeoutMs);
-
-      window.fetch = function (...args) {
-        const [url, opts] = args;
-        const authHeader = opts?.headers?.Authorization || opts?.headers?.authorization;
-        if (authHeader && typeof authHeader === 'string') {
-          const match = authHeader.match(/OAuth\s+(.+)/i);
-          if (match?.[1]) {
-            found = match[1].trim();
-            clearTimeout(timer);
-            window.fetch = origFetch;
-            resolve(found);
-            // Выполняем оригинальный запрос
-            return origFetch.apply(this, args);
-          }
-        }
-        // Проверяем Headers object
-        if (opts?.headers instanceof Headers) {
-          const auth = opts.headers.get('Authorization') || opts.headers.get('authorization');
-          if (auth) {
-            const match = auth.match(/OAuth\s+(.+)/i);
-            if (match?.[1]) {
-              found = match[1].trim();
-              clearTimeout(timer);
-              window.fetch = origFetch;
-              resolve(found);
-              return origFetch.apply(this, args);
-            }
-          }
-        }
-        return origFetch.apply(this, args);
-      };
-
-      // Триггерим обновление данных (если на дэшборде)
-      // Клик по странице может вызвать API-запрос
-      try {
-        window.dispatchEvent(new Event('resize'));
-      } catch (_) {}
-    });
-  }
-
-  // ═══════════════════════════════════════════════════════════
-  //  DOM-парсер (fallback)
-  // ═══════════════════════════════════════════════════════════
-
   async function scrollWidgetTable(widgetEl) {
     const scrollable =
       widgetEl.querySelector('.public_fixedDataTable_body') ||
       widgetEl.querySelector('.fixedDataTableLayout_rowsContainer');
 
-    if (!scrollable) {
-      log('scroll', 'scrollable not found, skip');
-      return;
-    }
+    if (!scrollable) return;
 
     await DELAY(200);
 
     const maxScroll = scrollable.scrollHeight - scrollable.clientHeight;
-    if (maxScroll <= 0) {
-      log('scroll', `no scroll needed (scrollHeight=${scrollable.scrollHeight})`);
-      return;
-    }
+    if (maxScroll <= 0) return;
 
-    log('scroll', `scrolling ${maxScroll}px`);
     const step = Math.max(200, Math.floor(maxScroll / 40));
     let pos = 0;
 
@@ -280,7 +485,6 @@
 
     scrollable.scrollTop = 0;
     await DELAY(200);
-    log('scroll', 'done');
   }
 
   function buildMetricInfo(headerTexts) {
@@ -371,16 +575,14 @@
     for (const card of cards) {
       const link = card.querySelector('a[data-testid="Link"]');
       const table = card.querySelector('.public_fixedDataTable_main');
-      if (link && table) {
-        result.push(card);
-      }
+      if (link && table) result.push(card);
     }
     return result;
   }
 
   async function collectData() {
     try {
-      log('init', window.location.href);
+      log('dom-init', window.location.href);
 
       const widgets = findWidgets();
       if (widgets.length === 0) {
@@ -402,17 +604,11 @@
         const headerTexts = Array.from(headerEls).map(getText).filter(Boolean);
         const metricInfo = buildMetricInfo(headerTexts);
 
-        log('widget', `${appName} | metrics: ${JSON.stringify(metricInfo.order)} | fieldsPerRow: ${metricInfo.fieldsPerRow}`);
-
         const cellEls = widget.querySelectorAll('[data-testid="Cell"]');
         const cellTexts = Array.from(cellEls).map(getText).filter(Boolean);
 
-        log('widget', `${appName}: ${cellTexts.length} cells`);
-
         const rows = parseRows(cellTexts, metricInfo);
         const metrics = buildMetrics(rows, metricInfo.order);
-
-        log('widget', `${appName}: ${rows.length} rows, dates: ${Object.keys(metrics.impressions || {}).length}`);
 
         allApps.push({
           appId: appName,
@@ -422,70 +618,82 @@
         });
       }
 
-      const result = {
-        platform: 'rsya',
-        timestamp: new Date().toISOString(),
-        dateRange: null,
-        apps: allApps,
-        _debugLog: LOG,
+      log('dom-done', `${allApps.length} приложений`);
+      return {
+        success: true,
+        data: {
+          platform: 'rsya',
+          timestamp: new Date().toISOString(),
+          dateRange: null,
+          apps: allApps,
+          _source: 'dom',
+          _debugLog: LOG,
+        },
       };
-
-      log('done', `${allApps.length} приложений`);
-      return { success: true, data: result };
-
     } catch (e) {
       LOG.push({ t: Date.now(), step: 'FATAL', detail: e.message });
-      return { success: false, error: e.message, _debugLog: LOG };
+      return { success: false, error: e.message, _debugLog: LOG, _source: 'dom' };
     }
   }
 
   // ═══════════════════════════════════════════════════════════
-  //  Обработчик сообщений
+  //  Обработчик сообщений от service worker / popup
   // ═══════════════════════════════════════════════════════════
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
+    // ── API-запрос РСЯ (выполняется здесь, на partner.yandex.ru) ──
+    if (msg.action === 'collectRsyaApi') {
+      const token = msg.data?.token || null;
+      collectRsyaViaApi(token).then(sendResponse);
+      return true; // async
+    }
+
+    // ── Быстрый тест: только tree.json ──
+    if (msg.action === 'testRsyaTree') {
+      const token = msg.data?.token || null;
+      const headers = { Accept: 'application/json' };
+      if (token) headers['Authorization'] = `OAuth ${token}`;
+
+      fetch('https://partner.yandex.ru/api/statistics2/tree.json?lang=ru&pretty=1', {
+        credentials: 'same-origin',
+        headers,
+      })
+        .then(r => r.text())
+        .then(text => {
+          try {
+            const json = JSON.parse(text);
+            sendResponse({
+              success: true,
+              result: json.result,
+              treeLength: json.data?.tree?.length || 0,
+              treeTitle: json.data?.tree?.[0]?.title || '',
+              rawPreview: text.substring(0, 1000),
+            });
+          } catch (_) {
+            sendResponse({ success: false, error: 'Не JSON', rawPreview: text.substring(0, 500) });
+          }
+        })
+        .catch(e => sendResponse({ success: false, error: e.message }));
+      return true;
+    }
+
     // ── Извлечение OAuth-токена из страницы ──
     if (msg.action === 'extractRsyaToken') {
-      // 1. Быстрый поиск в storage и globals
       const candidates = extractTokenFromStorage();
       if (candidates.length > 0) {
-        console.log('[AMH] Token candidates found:', candidates.length, candidates.map(c => c.source));
         sendResponse({ token: candidates[0].token, source: candidates[0].source, allCandidates: candidates });
         return false;
       }
 
-      // 2. Monkey-patch fetch чтобы перехватить следующий API-запрос
-      console.log('[AMH] No token in storage, intercepting fetch...');
       interceptNextFetch(5000).then((token) => {
         if (token) {
-          console.log('[AMH] Token intercepted from fetch');
           sendResponse({ token, source: 'fetch-intercept' });
         } else {
-          console.log('[AMH] No token intercepted');
           sendResponse({ token: null, error: 'Токен не найден' });
         }
       });
-      return true; // async
-    }
-
-    // ── Тестовый вызов API прямо из content script (same-origin) ──
-    if (msg.action === 'testRsyaApiFromPage') {
-      fetch('/api/statistics2/tree.json?lang=ru&pretty=1', {
-        credentials: 'include',
-        headers: { Accept: 'application/json' },
-      })
-        .then(r => {
-          if (!r.ok) throw new Error(`HTTP ${r.status}`);
-          return r.json();
-        })
-        .then(data => {
-          sendResponse({ success: true, result: data.result, treeNodes: data.data?.tree?.length });
-        })
-        .catch(e => {
-          sendResponse({ success: false, error: e.message });
-        });
-      return true; // async
+      return true;
     }
 
     // ── DOM-парсинг (fallback) ──

@@ -482,24 +482,18 @@ async function testRsyaApi() {
   el.btnTestRsya.disabled = true;
   el.btnTestRsya.textContent = '...';
   el.rsyaStatus.className = 'rsya-status';
-  el.rsyaStatus.textContent = 'Проверяю доступ к API...';
+  el.rsyaStatus.textContent = 'Проверяю tree.json (через content script)...';
 
   try {
     const result = await sendMsg('testRsyaApi');
 
     if (result.success) {
-      const apps = result.data?.apps || [];
-      const fields = result.data?._discoveredFields;
-      const dates = apps.length > 0
-        ? Object.keys(apps[0].metrics?.impressions || {}).length
-        : 0;
-
-      let info = `✓ API работает! ${apps.length} приложений, ${dates} дней.`;
-      if (fields) {
-        info += `\nПоля: ${JSON.stringify(fields.metrics)}`;
-      }
-      if (result.data?._debugLog) {
-        console.log('[AMH] RSYA API debug log:', result.data._debugLog);
+      let info = `✓ tree.json ответил! result="${result.result}", узлов: ${result.treeLength}`;
+      if (result.treeTitle) info += `\nУзел: "${result.treeTitle}"`;
+      // Показываем префикс raw ответа для диагностики
+      if (result.rawPreview) {
+        console.log('[AMH] tree.json raw:', result.rawPreview);
+        info += `\n(подробнее — в консоли popup: F12)`;
       }
 
       el.rsyaStatus.className = 'rsya-status ok';
@@ -512,10 +506,10 @@ async function testRsyaApi() {
       } else if (err.includes('HTTP 429')) {
         hint = '\n→ Слишком много запросов. Подождите.';
       } else if (err.includes('Failed to fetch') || err.includes('NetworkError')) {
-        hint = '\n→ Нет сети или CORS заблокирован.';
-      }
-      if (result._debugLog) {
-        console.log('[AMH] RSYA API debug log:', result._debugLog);
+        hint = '\n→ Ошибка сети.';
+      } else if (result.rawPreview) {
+        console.log('[AMH] tree.json raw response:', result.rawPreview);
+        hint = '\n(сырой ответ — в консоли popup: F12)';
       }
 
       el.rsyaStatus.className = 'rsya-status fail';

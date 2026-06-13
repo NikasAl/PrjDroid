@@ -117,272 +117,70 @@ async function sendToTab(tabId, message, retries = 6, delay = 1500) {
 }
 
 // ═══════════════════════════════════════════════════════════
-//  РСЯ API Collector — запросы к partner.yandex.ru/api/statistics2
+//  РСЯ: делегирование API-запросов в content script
+//  (content script на partner.yandex.ru имеет доступ к cookies)
 // ═══════════════════════════════════════════════════════════
 
-const RSYA_API = 'https://partner.yandex.ru/api/statistics2';
-
 /**
- * Обёртка над fetch для API РСЯ.
- * Поддерживает cookies (credentials:include) и OAuth-токен.
+ * Найти или открыть вкладку на partner.yandex.ru и выполнить action.
  */
-async function rsyaApiFetch(endpoint, params = {}, token = null) {
-  const url = new URL(`${RSYA_API}/${endpoint}`);
-  url.searchParams.set('lang', 'ru');
+async function ensureRsyaTabAndSend(action, data = {}) {
+  // Ищем уже открытую вкладку
+  const tabs = await chrome.tabs.query({ url: '*://partner.yandex.ru/*' });
+  let tabId;
 
-  for (const [key, value] of Object.entries(params)) {
-    if (Array.isArray(value)) {
-      value.forEach((v) => url.searchParams.append(key, String(v)));
-    } else if (value !== undefined && value !== null) {
-      url.searchParams.set(key, String(value));
-    }
+  if (tabs.length > 0) {
+    tabId = tabs[0].id;
+  } else {
+    // Открываем дашборд
+    const tab = await chrome.tabs.create({ url: 'https://partner.yandex.ru/v2/dashboard', active: false });
+    tabId = tab.id;
+    await waitForTabLoad(tabId);
+    // SPA — ждём рендер
+    await new Promise(r => setTimeout(r, 5000));
   }
 
-  const headers = { Accept: 'application/json' };
-  if (token) {
-    headers['Authorization'] = `OAuth ${token}`;
-  }
-
-  const resp = await fetch(url.toString(), {
-    credentials: 'include',
-    headers,
-  });
-
-  if (!resp.ok) {
-    const body = await resp.text().catch(() => '');
-    throw new Error(`API ${endpoint}: HTTP ${resp.status} — ${body.substring(0, 300)}`);
-  }
-
-  return resp.json();
+  return sendToTab(tabId, { action, data }, 3, 2000);
 }
 
 /**
- * Поиск ID поля по ключевым словам в label/title/id.
+ * Три подхода для получения данных РСЯ через content script:
+ * 1. Cookies only (без токена)
+ * 2. Токен из storage расширения
+ * 3. Токен, извлечённый из страницы
  */
-function findFieldId(fields, ...keywords) {
-  if (!fields || !Array.isArray(fields)) return null;
-  for (const f of fields) {
-    const haystack = ((f.label || '') + ' ' + (f.title || '') + ' ' + (f.id || '')).toLowerCase();
-    if (keywords.some((kw) => haystack.includes(kw.toLowerCase()))) return f.id;
-  }
-  return null;
-}
+async function tryCollectRsya(tabId) {
+  // Подход 1: Cookies only
+  let result = await ensureRsyaTabAndSend('collectRsyaApi', { token: null });
+  if (result?.success) return result;
+  const cookieError = result?.error || 'нет ответа от content script';
+  console.log('[AMH] РСЯ API cookies-only failed:', cookieError);
 
-/**
- * Основной сборщик РСЯ через API.
- * 1. Запрашивает tree.json для обнаружения доступных полей
- * 2. Запрашивает get.json со всеми метриками за 90 дней
- * 3. Парсит ответ в формат расширения
- */
-async function collectRsyaViaApi(token = null) {
-  const LOG = [];
-  const log = (step, detail) => {
-    LOG.push({ t: Date.now(), step, detail: typeof detail === 'string' ? detail : JSON.stringify(detail) });
-    console.log(`[AMH-RSYA-API ${step}]`, detail);
+  // Подход 2: Токен из storage расширения
+  const savedToken = await getRsyaToken();
+  if (savedToken) {
+    result = await ensureRsyaTabAndSend('collectRsyaApi', { token: savedToken });
+    if (result?.success) return result;
+    console.log('[AMH] РСЯ API with saved token failed:', result?.error);
+  }
+
+  // Подход 3: Токен из страницы
+  const extractResult = await ensureRsyaTabAndSend('extractRsyaToken');
+  const pageToken = extractResult?.token;
+  if (pageToken) {
+    console.log('[AMH] Found token from page, length:', pageToken.length);
+    await saveRsyaToken(pageToken);
+
+    result = await ensureRsyaTabAndSend('collectRsyaApi', { token: pageToken });
+    if (result?.success) return result;
+    console.log('[AMH] РСЯ API with page token failed:', result?.error);
+  }
+
+  return {
+    success: false,
+    error: `Cookies: ${cookieError}${savedToken ? ' | Token: ' + (result?.error || '') : ''}${pageToken ? ' | PageToken: ' + (result?.error || '') : ''}`,
+    _source: 'api-all-failed',
   };
-
-  try {
-    log('start', token ? 'Используем сохранённый токен' : 'Пробуем с session cookies');
-
-    // ── 1. Получаем дерево статистики ──
-    const treeResp = await rsyaApiFetch('tree.json', { pretty: 1 }, token);
-    if (treeResp.result !== 'ok' || !treeResp.data?.tree?.length) {
-      throw new Error(`tree.json вернул: ${treeResp.result || 'пустой ответ'}`);
-    }
-
-    const node = treeResp.data.tree[0];
-    const ef = node.entity_fields || [];
-    const mf = node.fields || [];
-
-    log('tree', `node="${node.id}" (${node.title}), entity_fields=${ef.length}, fields=${mf.length}`);
-
-    // ── 2. Обнаруживаем ID полей по названиям ──
-    // Поля-группировки (entity_fields)
-    const appIdField = findFieldId(ef, 'page id', 'page_id');
-    const appNameField = findFieldId(ef, 'название пейджа', 'page name', 'page caption', 'название блока');
-    const blockTypeField = findFieldId(ef, 'блочный уровень', 'block level', 'тип блока', 'block type', 'ad format', 'ad unit name', 'блок');
-
-    // Метрики (fields)
-    const revenueField = findFieldId(mf, 'вознаграждение', 'доход', 'revenue', 'partner_wo');
-    const showsField = findFieldId(mf, 'показы рекламы', 'показы в блок', 'shows');
-    const showsVisibleField = findFieldId(mf, 'видимые показы', 'visible shows', 'visible impressions');
-    const clicksField = findFieldId(mf, 'клик', 'click');
-    const ecpmField = findFieldId(mf, 'ecpm');
-
-    const effectiveShows = showsField || showsVisibleField;
-
-    log('discovered', {
-      entity: { appIdField, appNameField, blockTypeField },
-      metrics: { revenueField, showsField: effectiveShows, showsVisibleField, clicksField, ecpmField },
-    });
-
-    if (!appIdField && !appNameField) {
-      throw new Error('В дереве статистики не найдены поля для идентификации приложения');
-    }
-    if (!revenueField && !effectiveShows) {
-      throw new Error('В дереве статистики не найдены метрики (вознаграждение/показы)');
-    }
-
-    // ── 3. Собираем entity_field и field для запроса ──
-    const entityFields = [];
-    if (appIdField) entityFields.push(appIdField);
-    if (appNameField && appNameField !== appIdField) entityFields.push(appNameField);
-    // block_type добавляем отдельно — чтобы можно было агрегировать
-    const useBlockType = !!blockTypeField && blockTypeField !== appIdField && blockTypeField !== appNameField;
-    if (useBlockType) entityFields.push(blockTypeField);
-
-    const metricFields = [revenueField, effectiveShows, clicksField, ecpmField].filter(Boolean);
-
-    // ── 4. Запрашиваем данные с пагинацией ──
-    const allPoints = [];
-    let offset = 0;
-    const limit = 1000;
-    let pageNum = 0;
-
-    while (true) {
-      pageNum++;
-      const params = {
-        dimension_field: 'date|day',
-        period: '90days',
-        pretty: 1,
-        limits: JSON.stringify({ limit, offset }),
-        entity_field: entityFields,
-        field: metricFields,
-      };
-
-      const data = await rsyaApiFetch('get.json', params, token);
-
-      if (data.result !== 'ok') {
-        throw new Error(`get.json вернул: ${data.result}`);
-      }
-
-      const points = data.data?.points || [];
-      allPoints.push(...points);
-
-      log('page', `страница ${pageNum}: ${points.length} точек (всего: ${allPoints.length})`);
-
-      if (data.data?.is_last_page !== false || points.length === 0) break;
-      offset += limit;
-      if (pageNum >= 10) break; // safety
-    }
-
-    log('total', `${allPoints.length} точек данных получено`);
-
-    // ── 5. Определяем ключи dimensions из первой точки ──
-    let appNameKey = null;
-    let blockTypeKey = null;
-
-    for (const point of allPoints) {
-      const dims = point.dimensions || {};
-      for (const key of Object.keys(dims)) {
-        if (key === 'date') continue;
-        const val = dims[key];
-        if (typeof val === 'string' && val.length > 2 && !appNameKey) {
-          // Первое строковое поле (не date) — скорее всего название
-          appNameKey = key;
-        } else if (typeof val === 'string' && val.length > 0 && appNameKey && key !== appNameKey && !blockTypeKey) {
-          blockTypeKey = key;
-        }
-      }
-      if (appNameKey) break;
-    }
-
-    log('keys', { appNameKey, blockTypeKey });
-
-    // ── 6. Группируем точки по приложениям и датам ──
-    const appsMap = {}; // appName → { revenue: {date: val}, impressions: {...}, ... }
-
-    for (const point of allPoints) {
-      const dims = point.dimensions || {};
-      const measures = point.measures?.[0] || {};
-
-      const dateArr = dims.date;
-      if (!dateArr?.[0]) continue;
-      const date = dateArr[0];
-
-      const appName = appNameKey ? String(dims[appNameKey] || 'Unknown') : 'Unknown';
-
-      if (!appsMap[appName]) {
-        appsMap[appName] = { revenue: {}, impressions: {}, clicks: {}, ecpm: {}, _raw: [] };
-      }
-
-      const app = appsMap[appName];
-
-      // Суммируем метрики (для агрегации по block_type)
-      if (revenueField && typeof measures[revenueField] === 'number') {
-        app.revenue[date] = (app.revenue[date] || 0) + measures[revenueField];
-      }
-      if (effectiveShows && typeof measures[effectiveShows] === 'number') {
-        app.impressions[date] = (app.impressions[date] || 0) + measures[effectiveShows];
-      }
-      if (clicksField && typeof measures[clicksField] === 'number') {
-        app.clicks[date] = (app.clicks[date] || 0) + measures[clicksField];
-      }
-      // eCPM рассчитаем после агрегации
-    }
-
-    // ── 7. Рассчитываем eCPM из revenue/impressions ──
-    for (const [appName, app] of Object.entries(appsMap)) {
-      for (const date of Object.keys(app.impressions)) {
-        const imp = app.impressions[date];
-        const rev = app.revenue[date];
-        if (imp > 0 && rev !== undefined) {
-          app.ecpm[date] = (rev / imp) * 1000;
-        }
-      }
-    }
-
-    // ── 8. Формируем результат ──
-    const apps = Object.entries(appsMap).map(([name, m]) => ({
-      appId: name,
-      name: name,
-      platform: 'rsya',
-      metrics: {
-        revenue: m.revenue,
-        impressions: m.impressions,
-        clicks: m.clicks,
-        ecpm: m.ecpm,
-      },
-    }));
-
-    log('done', `${apps.length} приложений собрано через API`);
-
-    return {
-      success: true,
-      data: {
-        platform: 'rsya',
-        timestamp: new Date().toISOString(),
-        dateRange: null,
-        apps,
-        _source: 'api',
-        _debugLog: LOG,
-        _discoveredFields: {
-          entity: { appIdField, appNameField, blockTypeField },
-          metrics: { revenueField, showsField: effectiveShows, clicksField, ecpmField },
-        },
-      },
-    };
-  } catch (e) {
-    log('error', e.message);
-    return {
-      success: false,
-      error: e.message,
-      _debugLog: LOG,
-      _source: 'api',
-    };
-  }
-}
-
-/**
- * Пробуем получить токен из страницы (content script).
- * Ищет в localStorage, sessionStorage, глобальных переменных.
- */
-async function extractTokenFromPage(tabId) {
-  try {
-    const resp = await sendToTab(tabId, { action: 'extractRsyaToken' }, 3, 1000);
-    if (resp?.token) return resp.token;
-  } catch (_) {}
-  return null;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -822,40 +620,57 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         }
         const url = tabs[0].url || '';
 
-        // ── РСЯ: сначала пробуем API ──
+        // ── РСЯ: API через content script (same-origin cookies) → fallback DOM ──
         if (url.includes('partner.yandex.ru')) {
-          tryCollectRsya(tabs[0].id)
-            .then(async (apiResult) => {
-              if (apiResult.success) {
-                const dailyData = await getDailyData();
-                mergeRsyaData(dailyData, apiResult.data.apps);
-                await saveDailyData(dailyData);
-                sendResponse(apiResult);
-              } else {
-                // Fallback на DOM-парсинг
-                chrome.tabs
-                  .sendMessage(tabs[0].id, { action: 'collectYandexAds' })
-                  .then(async (resp) => {
-                    if (resp?.success) {
-                      const data = resp.data;
-                      const dailyData = await getDailyData();
-                      if (data.apps) {
-                        mergeRsyaData(dailyData, data.apps);
-                        await saveDailyData(dailyData);
-                      }
-                    }
-                    sendResponse(
-                      resp?.success
-                        ? resp
-                        : { success: false, error: `API: ${apiResult.error}\nDOM: ${resp?.error || 'нет ответа'}` }
-                    );
-                  })
-                  .catch((e) =>
-                    sendResponse({ success: false, error: `API: ${apiResult.error}\nDOM: ${e.message}` })
-                  );
+          const tabId = tabs[0].id;
+          (async () => {
+            try {
+              // Подход 1: Cookies only
+              let result = await sendToTab(tabId, { action: 'collectRsyaApi', data: { token: null } }, 3, 2000);
+
+              // Подход 2: Токен из storage
+              if (!result?.success) {
+                const savedToken = await getRsyaToken();
+                if (savedToken) {
+                  result = await sendToTab(tabId, { action: 'collectRsyaApi', data: { token: savedToken } }, 3, 2000);
+                }
               }
-            });
-          return true; // async response
+
+              // Подход 3: Токен из страницы
+              if (!result?.success) {
+                const extResp = await sendToTab(tabId, { action: 'extractRsyaToken' }, 3, 2000);
+                if (extResp?.token) {
+                  await saveRsyaToken(extResp.token);
+                  result = await sendToTab(tabId, { action: 'collectRsyaApi', data: { token: extResp.token } }, 3, 2000);
+                }
+              }
+
+              if (result?.success) {
+                const dailyData = await getDailyData();
+                mergeRsyaData(dailyData, result.data.apps);
+                await saveDailyData(dailyData);
+                sendResponse(result);
+                return;
+              }
+
+              // API не сработал — fallback на DOM-парсинг
+              console.log('[AMH] РСЯ API all failed, trying DOM:', result?.error);
+              const domResp = await sendToTab(tabId, { action: 'collectYandexAds' }, 3, 2000);
+              if (domResp?.success) {
+                const dailyData = await getDailyData();
+                if (domResp.data.apps) {
+                  mergeRsyaData(dailyData, domResp.data.apps);
+                  await saveDailyData(dailyData);
+                }
+                sendResponse(domResp);
+              } else {
+                sendResponse({ success: false, error: `API: ${result?.error}\nDOM: ${domResp?.error || 'нет ответа'}` });
+              }
+            } catch (e) {
+              sendResponse({ success: false, error: e.message });
+            }
+          })();
+          return true;
         }
 
         // ── RuStore / Google Play — как раньше ──
@@ -946,12 +761,16 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       return true;
     }
 
-    // ── Тест РСЯ API (для диагностики) ──
+    // ── Тест РСЯ API (tree.json через content script на same-origin) ──
     case 'testRsyaApi': {
       (async () => {
-        const token = await getRsyaToken();
-        const result = await collectRsyaViaApi(token || null);
-        sendResponse(result);
+        try {
+          const token = await getRsyaToken();
+          const result = await ensureRsyaTabAndSend('testRsyaTree', { token: token || null });
+          sendResponse(result);
+        } catch (e) {
+          sendResponse({ success: false, error: e.message });
+        }
       })();
       return true;
     }
