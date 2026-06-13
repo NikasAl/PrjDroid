@@ -11,20 +11,18 @@
     console.log(`[AMH-RSYA ${step}]`, detail);
   }
 
-  // ── Хелперы парсинга чисел и дат ──
+  // ── Хелперы парсинга ──
 
   function parseNum(s) {
     if (!s || typeof s !== 'string') return 0;
-    // "6\u205f280" -> thin space -> normal space, "276,43 ₽" -> strip currency
-    const cleaned = s.replace(/\u205f/g, ' ').replace(/\s/g, '').replace(/[^\d.\-]/g, '');
+    const cleaned = s.replace(/\u205f/g, '').replace(/\s/g, '').replace(/[^\d.\-]/g, '');
     const v = parseFloat(cleaned.replace(',', '.'));
     return isNaN(v) ? 0 : v;
   }
 
   function parseMoney(s) {
     if (!s || typeof s !== 'string') return 0;
-    // "276,43 ₽" -> 276.43
-    const cleaned = s.replace(/\u205f/g, ' ').replace(/[₽\s]/g, '').replace(',', '.');
+    const cleaned = s.replace(/\u205f/g, '').replace(/[₽\s]/g, '').replace(',', '.');
     const v = parseFloat(cleaned);
     return isNaN(v) ? 0 : v;
   }
@@ -41,15 +39,11 @@
     if (!m) return null;
     const month = months[m[2].toLowerCase()];
     if (!month) return null;
-    const day = m[1].padStart(2, '0');
-    return `${m[3]}-${String(month).padStart(2, '0')}-${day}`;
+    return `${m[3]}-${String(month).padStart(2, '0')}-${m[1].padStart(2, '0')}`;
   }
-
-  // ── Получить текстовое содержимое элемента ──
 
   function getText(el) {
     if (!el) return '';
-    // Заменяем &nbsp; и thin space на обычный пробел
     return (el.textContent || el.innerText || '')
       .replace(/&nbsp;/g, ' ')
       .replace(/\u205f/g, ' ')
@@ -57,124 +51,91 @@
       .trim();
   }
 
-  // ── Распознать тип колонки по заголовку ──
+  // ── Определить порядок метрик по заголовкам виджета ──
+  // Заголовки двойные: "Вознаграждение" | "276,43 ₽" | "Показы" | "6 325" | ...
+  // Нам нужны только текстовые (суммы пропускаем)
 
-  function identifyColumns(headerTexts) {
-    const colMap = {};
-    for (let i = 0; i < headerTexts.length; i++) {
-      const h = headerTexts[i].toLowerCase();
-      if (h === 'дата') colMap.date = i;
-      else if (h === 'тип блока') colMap.blockType = i;
-      else if (h.includes('вознаграждение')) colMap.revenue = i;
-      else if (h.includes('видимые показы')) colMap.visibleImpressions = i;
-      else if (h === 'показы') colMap.impressions = i;
-      else if (h === 'ecpm') colMap.ecpm = i;
-      else if (h.includes('клик')) colMap.clicks = i;
-      else if (h.includes('ctr')) colMap.ctr = i;
+  function buildMetricOrder(headerTexts) {
+    const order = []; // массив имён метрик в порядке их следования в ячейках
+    for (const h of headerTexts) {
+      const hl = h.toLowerCase();
+      if (hl === 'дата' || hl === 'тип блока' || hl === 'итого' || hl === '') continue;
+      // Пропускаем ячейки-суммы (содержат цифры)
+      if (/\d/.test(h)) continue;
+      if (hl.includes('вознаграждение')) order.push('revenue');
+      else if (hl.includes('видимые показы')) order.push('visibleImpressions');
+      else if (hl === 'показы') order.push('impressions');
+      else if (hl === 'ecpm') order.push('ecpm');
+      else if (hl.includes('клик')) order.push('clicks');
+      else if (hl.includes('ctr')) order.push('ctr');
     }
-    return colMap;
+    return order;
   }
 
-  // ── Парсинг одного виджета (одного приложения) ──
+  // ── Парсинг одного виджета ──
 
   function parseWidget(widgetEl) {
-    // Название приложения — из ссылки внутри заголовка
     const linkEl = widgetEl.querySelector('[data-testid="Link"]');
     const appName = getText(linkEl) || 'Unknown App';
 
-    // Все заголовки колонок
     const headerEls = widgetEl.querySelectorAll('[data-testid^="HeaderCell"]');
     const headerTexts = Array.from(headerEls).map(getText).filter(Boolean);
-    const cols = identifyColumns(headerTexts);
+    const metricOrder = buildMetricOrder(headerTexts);
+    const hasBlockType = headerTexts.some(h => h.toLowerCase() === 'тип блока');
 
-    log('parseWidget', `${appName} | columns: ${JSON.stringify(cols)} | headers: ${JSON.stringify(headerTexts)}`);
+    log('parseWidget', `${appName} | metricOrder: ${JSON.stringify(metricOrder)} | hasBlockType: ${hasBlockType}`);
 
-    // Все ячейки данных
+    // Все ячейки
     const cellEls = widgetEl.querySelectorAll('[data-testid="Cell"]');
     const cellTexts = Array.from(cellEls).map(getText).filter(Boolean);
 
     if (cellTexts.length === 0) {
-      log('parseWidget', `нет ячеек для ${appName}`);
       return { appName, rows: [] };
     }
 
-    // Определяем ширину строки (сколько полей данных на каждую строку)
-    // Паттерн: Дата, Тип блока, [данные...]
-    // Считаем количество полей между датами
-    const dateIndices = [];
-    for (let i = 0; i < cellTexts.length; i++) {
-      if (parseDate(cellTexts[i])) dateIndices.push(i);
-    }
-
-    if (dateIndices.length === 0) {
-      log('parseWidget', `нет дат для ${appName}`);
-      return { appName, rows: [] };
-    }
-
-    // Ширина строки = позиция второй даты минус позиция первой даты
-    let rowWidth = dateIndices.length > 1
-      ? dateIndices[1] - dateIndices[0]
-      : cellTexts.length - dateIndices[0];
-
+    // Разбиваем ячейки на строки по датам
+    // Каждая строка: [Дата, Тип блока?, метрика1, метрика2, ...]
     const rows = [];
-    for (let i = 0; i < dateIndices.length; i++) {
-      const start = dateIndices[i];
-      const end = i + 1 < dateIndices.length ? dateIndices[i + 1] : start + rowWidth;
-      const rowCells = cellTexts.slice(start, end);
+    let i = 0;
 
-      const date = parseDate(rowCells[0]);
-      if (!date) continue;
+    while (i < cellTexts.length) {
+      const date = parseDate(cellTexts[i]);
+      if (!date) { i++; continue; }
 
-      const row = { date };
+      // Собираем все строки с этой датой (может быть несколько типов блоков)
+      while (i < cellTexts.length && parseDate(cellTexts[i]) === date) {
+        const row = { date };
 
-      // Если есть колонка Тип блока — строки группируются по нему
-      if (cols.blockType !== undefined) {
-        row.blockType = rowCells[1] || '';
+        let offset = 1; // после даты
+        if (hasBlockType && i + offset < cellTexts.length && !parseDate(cellTexts[i + offset])) {
+          row.blockType = cellTexts[i + offset];
+          offset = 2;
+        }
+
+        // Читаем метрики в порядке из заголовков
+        for (let mi = 0; mi < metricOrder.length && (i + offset + mi) < cellTexts.length; mi++) {
+          const val = cellTexts[i + offset + mi];
+          // Если наткнулись на следующую дату — стоп
+          if (parseDate(val)) break;
+
+          const metric = metricOrder[mi];
+          if (metric === 'revenue') row.revenue = parseMoney(val);
+          else if (metric === 'impressions' || metric === 'visibleImpressions' || metric === 'clicks') {
+            row[metric] = parseNum(val);
+          }
+          // eCPM и CTR не сохраняем — они производные
+        }
+
+        rows.push(row);
+        i += offset + metricOrder.length;
       }
-
-      // Мапим значения по колонкам
-      // Порядок в ячейках: Дата, [Тип блока], [Видимые показы], Вознаграждение, Показы, eCPM
-      // Но точный порядок зависит от набора колонок в конкретном виджете
-      // Поэтому используем смещения относительно известных позиций
-
-      // Собираем все числовые значения из строки
-      const numValues = [];
-      for (let j = (cols.blockType !== undefined ? 2 : 1); j < rowCells.length; j++) {
-        const v = rowCells[j];
-        if (v) numValues.push(v);
-      }
-
-      // Определяем порядок метрик по заголовкам (пропуская Дата и Тип блока)
-      const metricOrder = [];
-      for (let j = 0; j < headerTexts.length; j++) {
-        const h = headerTexts[j].toLowerCase();
-        if (h === 'дата' || h === 'тип блока' || h === 'итого' || h === '') continue;
-        // Пропускаем суммарные значения (заголовки с числами вроде "6 280" — это итого)
-        if (/\d/.test(headerTexts[j]) && j > 0) continue;
-        metricOrder.push(h);
-      }
-
-      // Маппинг: по порядку метрик в заголовках берем значения из numValues
-      for (let mi = 0; mi < metricOrder.length && mi < numValues.length; mi++) {
-        const metric = metricOrder[mi];
-        const val = numValues[mi];
-
-        if (metric.includes('вознаграждение')) row.revenue = parseMoney(val);
-        else if (metric.includes('видимые показы')) row.visibleImpressions = parseNum(val);
-        else if (metric === 'показы') row.impressions = parseNum(val);
-        else if (metric === 'ecpm') row.ecpm = parseMoney(val);
-        else if (metric.includes('клик')) row.clicks = parseNum(val);
-        else if (metric.includes('ctr')) row.ctr = val;
-      }
-
-      rows.push(row);
     }
 
-    log('parseWidget', `${appName}: ${rows.length} rows parsed`);
+    log('parseWidget', `${appName}: ${rows.length} rows`);
     return { appName, rows };
   }
 
-  // ── Агрегация строк по дате (складываем разные типы блоков) ──
+  // ── Агрегация по дате (складываем разные типы блоков) ──
 
   function aggregateByDate(rows) {
     const byDate = {};
@@ -195,14 +156,13 @@
     try {
       log('init', window.location.href);
 
-      // Найти все виджеты-таблицы на дэшборде
       const widgets = document.querySelectorAll('[data-testid="piWidgetRenderer.WidgetStatisticsTable"]');
 
       if (widgets.length === 0) {
-        throw new Error('Таблицы статистики не найдены на странице. Убедитесь что вы на дэшборде.');
+        throw new Error('Таблицы статистики не найдены на странице.');
       }
 
-      log('foundWidgets', `найдено ${widgets.length} виджетов`);
+      log('foundWidgets', `${widgets.length} виджетов`);
 
       const allApps = [];
 
@@ -210,11 +170,8 @@
         const parsed = parseWidget(widget);
         const aggregated = aggregateByDate(parsed.rows);
 
-        // Используем имя приложения как appId (в РСЯ нет числовых ID на дэшборде)
-        const appId = parsed.appName;
-
         allApps.push({
-          appId,
+          appId: parsed.appName,
           name: parsed.appName,
           platform: 'rsya',
           metrics: {
@@ -234,12 +191,12 @@
       const result = {
         platform: 'rsya',
         timestamp: new Date().toISOString(),
-        dateRange: null, // На дэшборде нет явного диапазона
+        dateRange: null,
         apps: allApps,
         _debugLog: LOG,
       };
 
-      log('done', `${allApps.length} приложений обработано`);
+      log('done', `${allApps.length} приложений`);
       return { success: true, data: result };
 
     } catch (e) {
@@ -257,11 +214,7 @@
     }
 
     if (msg.action === 'ping') {
-      sendResponse({
-        alive: true,
-        platform: 'rsya',
-        url: window.location.href,
-      });
+      sendResponse({ alive: true, platform: 'rsya', url: window.location.href });
       return false;
     }
   });
