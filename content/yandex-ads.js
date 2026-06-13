@@ -1,8 +1,10 @@
 // content/yandex-ads.js — РСЯ Dashboard Parser
-// Парсит таблицы с дэшборда https://partner.yandex.ru/v2/dashboard
+// Парсит виртуализированные таблицы с дэшборда https://partner.yandex.ru/v2/dashboard
 
 (function () {
   'use strict';
+
+  const DELAY = (ms) => new Promise((r) => setTimeout(r, ms));
 
   const LOG = [];
   function log(step, detail) {
@@ -27,7 +29,6 @@
     return isNaN(v) ? 0 : v;
   }
 
-  // "13 июня 2026, сб" -> "2026-06-13"
   function parseDate(s) {
     if (!s || typeof s !== 'string') return null;
     const months = {
@@ -51,28 +52,71 @@
       .trim();
   }
 
-  // ── Определить порядок метрик по заголовкам виджета ──
-  // Заголовки двойные: "Вознаграждение" | "276,43 ₽" | "Показы" | "6 325" | ...
-  // Нам нужны только текстовые (суммы пропускаем)
+  // ── Скролл виртуализированной таблицы до конца ──
+
+  async function scrollTableToEnd(widgetEl) {
+    const scrollable = widgetEl.querySelector('.public_fixedDataTable_rowsContainer')
+      || widgetEl.querySelector('.fixedDataTableCellGroupLayout_main')
+      || widgetEl.querySelector('[style*="overflow"]');
+
+    if (!scrollable) {
+      log('scroll', 'no scrollable container found, skipping scroll');
+      return;
+    }
+
+    const maxScroll = scrollable.scrollHeight - scrollable.clientHeight;
+    log('scroll', `scrollHeight=${scrollable.scrollHeight}, clientHeight=${scrollable.clientHeight}, maxScroll=${maxScroll}`);
+
+    if (maxScroll <= 0) return;
+
+    // Скроллим порциями, ожидая подгрузки
+    const step = Math.max(200, Math.floor(maxScroll / 30));
+    let current = 0;
+    while (current < maxScroll) {
+      current = Math.min(current + step, maxScroll);
+      scrollable.scrollTop = current;
+      await DELAY(150);
+    }
+
+    // Скроллим обратно наверх для надёжности
+    scrollable.scrollTop = 0;
+    await DELAY(300);
+    log('scroll', 'scroll complete');
+  }
+
+  // ── Определить порядок метрик по заголовкам ──
 
   function buildMetricOrder(headerTexts) {
-    const order = []; // массив имён метрик в порядке их следования в ячейках
+    const order = [];
+    let hasImpressions = false;
     for (const h of headerTexts) {
       const hl = h.toLowerCase();
       if (hl === 'дата' || hl === 'тип блока' || hl === 'итого' || hl === '') continue;
-      // Пропускаем ячейки-суммы (содержат цифры)
       if (/\d/.test(h)) continue;
       if (hl.includes('вознаграждение')) order.push('revenue');
-      else if (hl.includes('видимые показы')) order.push('visibleImpressions');
-      else if (hl === 'показы') order.push('impressions');
+      else if (hl.includes('видимые показы')) {
+        // Запоминаем но пока не добавляем — если будет "Показы", он заменит
+        order.push('visibleImpressions');
+      }
+      else if (hl === 'показы') {
+        // Если уже есть visibleImpressions — заменим
+        const vi = order.indexOf('visibleImpressions');
+        if (vi >= 0) order[vi] = 'impressions';
+        else order.push('impressions');
+        hasImpressions = true;
+      }
       else if (hl === 'ecpm') order.push('ecpm');
       else if (hl.includes('клик')) order.push('clicks');
       else if (hl.includes('ctr')) order.push('ctr');
     }
+    // Если visibleImpressions остался (нет "Показы") — считаем как impressions
+    for (let i = 0; i < order.length; i++) {
+      if (order[i] === 'visibleImpressions') order[i] = 'impressions';
+    }
     return order;
   }
 
-  // ── Парсинг одного виджета ──
+  // ── Парсинг одного виджета (ПОСЛЕ скролла) ──
 
   function parseWidget(widgetEl) {
     const linkEl = widgetEl.querySelector('[data-testid="Link"]');
@@ -82,10 +126,10 @@
     const headerTexts = Array.from(headerEls).map(getText).filter(Boolean);
     const metricOrder = buildMetricOrder(headerTexts);
     const hasBlockType = headerTexts.some(h => h.toLowerCase() === 'тип блока');
+    const fieldsPerRow = 1 + (hasBlockType ? 1 : 0) + metricOrder.length;
 
-    log('parseWidget', `${appName} | metricOrder: ${JSON.stringify(metricOrder)} | hasBlockType: ${hasBlockType}`);
+    log('parseWidget', `${appName} | metrics: ${JSON.stringify(metricOrder)} | fieldsPerRow: ${fieldsPerRow}`);
 
-    // Все ячейки
     const cellEls = widgetEl.querySelectorAll('[data-testid="Cell"]');
     const cellTexts = Array.from(cellEls).map(getText).filter(Boolean);
 
@@ -93,8 +137,9 @@
       return { appName, rows: [] };
     }
 
-    // Разбиваем ячейки на строки по датам
-    // Каждая строка: [Дата, Тип блока?, метрика1, метрика2, ...]
+    log('parseWidget', `${appName}: ${cellTexts.length} cells total`);
+
+    // Строгий разбор: каждая строка = fieldsPerRow ячеек
     const rows = [];
     let i = 0;
 
@@ -102,52 +147,56 @@
       const date = parseDate(cellTexts[i]);
       if (!date) { i++; continue; }
 
-      // Собираем все строки с этой датой (может быть несколько типов блоков)
-      while (i < cellTexts.length && parseDate(cellTexts[i]) === date) {
-        const row = { date };
+      // Проверяем что хватает ячеек на полную строку
+      if (i + fieldsPerRow > cellTexts.length) break;
 
-        let offset = 1; // после даты
-        if (hasBlockType && i + offset < cellTexts.length && !parseDate(cellTexts[i + offset])) {
-          row.blockType = cellTexts[i + offset];
-          offset = 2;
-        }
+      const row = { date };
+      let offset = 1;
 
-        // Читаем метрики в порядке из заголовков
-        for (let mi = 0; mi < metricOrder.length && (i + offset + mi) < cellTexts.length; mi++) {
-          const val = cellTexts[i + offset + mi];
-          // Если наткнулись на следующую дату — стоп
-          if (parseDate(val)) break;
-
-          const metric = metricOrder[mi];
-          if (metric === 'revenue') row.revenue = parseMoney(val);
-          else if (metric === 'impressions' || metric === 'visibleImpressions' || metric === 'clicks') {
-            row[metric] = parseNum(val);
-          }
-          // eCPM и CTR не сохраняем — они производные
-        }
-
-        rows.push(row);
-        i += offset + metricOrder.length;
+      if (hasBlockType) {
+        row.blockType = cellTexts[i + offset] || '';
+        offset = 2;
       }
+
+      // Читаем метрики строго по порядку
+      for (let mi = 0; mi < metricOrder.length; mi++) {
+        const val = cellTexts[i + offset + mi];
+        const metric = metricOrder[mi];
+        if (metric === 'revenue') row.revenue = parseMoney(val);
+        else if (metric === 'impressions' || metric === 'clicks') row[metric] = parseNum(val);
+        else if (metric === 'ecpm') row.ecpm = parseMoney(val);
+        else row[metric] = val; // CTR и прочие — как текст
+      }
+
+      rows.push(row);
+      i += fieldsPerRow;
     }
 
-    log('parseWidget', `${appName}: ${rows.length} rows`);
+    log('parseWidget', `${appName}: ${rows.length} rows parsed`);
     return { appName, rows };
   }
 
-  // ── Агрегация по дате (складываем разные типы блоков) ──
+  // ── Агрегация по дате+тип блока, с отдельными метриками ──
 
-  function aggregateByDate(rows) {
-    const byDate = {};
-    for (const row of rows) {
-      if (!byDate[row.date]) {
-        byDate[row.date] = { impressions: 0, revenue: 0, clicks: 0 };
+  function buildMetrics(rows, metricOrder) {
+    // impressions, revenue, clicks, ecpm — каждая { date: value }
+    const metrics = {};
+    for (const metric of ['impressions', 'revenue', 'clicks', 'ecpm']) {
+      if (metricOrder.includes(metric)) {
+        metrics[metric] = {};
       }
-      byDate[row.date].impressions += row.impressions || 0;
-      byDate[row.date].revenue += row.revenue || 0;
-      byDate[row.date].clicks += row.clicks || 0;
     }
-    return byDate;
+
+    for (const row of rows) {
+      for (const metric of Object.keys(metrics)) {
+        const val = row[metric];
+        if (val !== undefined) {
+          metrics[metric][row.date] = val;
+        }
+      }
+    }
+
+    return metrics;
   }
 
   // ── Главный сборщик ──
@@ -166,25 +215,26 @@
 
       const allApps = [];
 
-      for (const widget of widgets) {
+      for (let wi = 0; wi < widgets.length; wi++) {
+        const widget = widgets[wi];
+
+        // Скроллим таблицу чтобы подгрузить все строки
+        log('scrollWidget', `widget ${wi}...`);
+        await scrollTableToEnd(widget);
+
+        // Читаем заголовки чтобы знать метрики
+        const headerEls = widget.querySelectorAll('[data-testid^="HeaderCell"]');
+        const headerTexts = Array.from(headerEls).map(getText).filter(Boolean);
+        const metricOrder = buildMetricOrder(headerTexts);
+
         const parsed = parseWidget(widget);
-        const aggregated = aggregateByDate(parsed.rows);
+        const metrics = buildMetrics(parsed.rows, metricOrder);
 
         allApps.push({
           appId: parsed.appName,
           name: parsed.appName,
           platform: 'rsya',
-          metrics: {
-            impressions: Object.fromEntries(
-              Object.entries(aggregated).map(([d, v]) => [d, v.impressions])
-            ),
-            revenue: Object.fromEntries(
-              Object.entries(aggregated).map(([d, v]) => [d, v.revenue])
-            ),
-            clicks: Object.fromEntries(
-              Object.entries(aggregated).map(([d, v]) => [d, v.clicks])
-            ),
-          },
+          metrics,
         });
       }
 

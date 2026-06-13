@@ -369,6 +369,11 @@ function renderDataSummary() {
         recent, ids, 'revenue', 'rsya', names, fmtDate,
         (v) => (v !== undefined && v !== null ? Number(v).toLocaleString('ru-RU', { minimumFractionDigits: 2 }) + ' ₽' : '—')
       );
+      html += '<h3>РСЯ — eCPM</h3>';
+      html += buildMiniTable(
+        recent, ids, 'ecpm', 'rsya', names, fmtDate,
+        (v) => (v !== undefined && v !== null ? Number(v).toLocaleString('ru-RU', { minimumFractionDigits: 2 }) + ' ₽' : '—')
+      );
     }
   }
 

@@ -59,13 +59,12 @@ function mergeData(stored, platform, appId, metrics) {
 function mergeRsyaData(stored, apps) {
   for (const app of apps) {
     const appId = app.appId;
-    // impressions, revenue, clicks — каждая метрика это { date: value }
-    for (const metric of ['impressions', 'revenue', 'clicks']) {
-      const dateValues = (app.metrics[metric] || {});
-      // Отделяем числовые значения от прочих полей
+    for (const metric of ['impressions', 'revenue', 'clicks', 'ecpm']) {
+      const dateValues = app.metrics[metric];
+      if (!dateValues || typeof dateValues !== 'object') continue;
       const cleanValues = {};
       for (const [date, val] of Object.entries(dateValues)) {
-        if (typeof val === 'number' && /\d{4}-\d{2}-\d{2}/.test(date)) {
+        if (typeof val === 'number' && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
           cleanValues[date] = val;
         }
       }
@@ -136,7 +135,7 @@ async function collectFromUrl(url, platform, reuseTabId) {
 
     await waitForTabLoad(tabId);
     // SPA — даём фреймворку время отрендерить (РСЯ грузит таблицы дольше)
-    const spaDelay = platform === 'rsya' ? 6000 : 3500;
+    const spaDelay = platform === 'rsya' ? 10000 : 3500;
     await new Promise((r) => setTimeout(r, spaDelay));
 
     const action = PLATFORM_ACTION[platform];
@@ -414,6 +413,24 @@ function formatMarkdown(dailyData, apps) {
             ids
               .map((id) => {
                 const v = getCol(id, 'rsya', 'revenue', d, dailyData);
+                return v !== undefined && v !== null ? num(v) + ' ₽' : '—';
+              })
+              .join(' | ') +
+            ' |'
+        );
+      }
+      // eCPM
+      L.push('### РСЯ — eCPM по дням (руб.)');
+      L.push('| Дата | ' + names.join(' | ') + ' |');
+      L.push(sep);
+      for (const d of dates) {
+        L.push(
+          '| ' +
+            fmtDate(d) +
+            ' | ' +
+            ids
+              .map((id) => {
+                const v = getCol(id, 'rsya', 'ecpm', d, dailyData);
                 return v !== undefined && v !== null ? num(v) + ' ₽' : '—';
               })
               .join(' | ') +
