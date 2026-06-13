@@ -24,6 +24,11 @@ const el = {
   dataSummary: $('#data-summary'),
   btnExport: $('#btn-export'),
   btnClear: $('#btn-clear'),
+  // РСЯ API
+  btnTestRsya: $('#btn-test-rsya'),
+  rsyaStatus: $('#rsya-status'),
+  fRsyaToken: $('#f-rsya-token'),
+  btnSaveToken: $('#btn-save-token'),
 };
 
 // ═══════════════════════════════════════════════════════════
@@ -51,6 +56,12 @@ async function init() {
     showStatus('collecting', `Сбор: ${status.current}/${status.total} — ${status.appName}...`);
     pollStatus();
   }
+
+  // Загрузить сохранённый РСЯ токен
+  const tokenResp = await sendMsg('getRsyaToken');
+  if (tokenResp) {
+    el.fRsyaToken.value = tokenResp.token || '';
+  }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -71,6 +82,9 @@ function bindEvents() {
   el.btnCollectCurrent.addEventListener('click', collectCurrentPage);
   el.btnExport.addEventListener('click', exportMarkdown);
   el.btnClear.addEventListener('click', clearData);
+  // РСЯ API
+  el.btnTestRsya.addEventListener('click', testRsyaApi);
+  el.btnSaveToken.addEventListener('click', saveRsyaToken);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -458,4 +472,70 @@ function esc(s) {
   const d = document.createElement('div');
   d.textContent = s;
   return d.innerHTML;
+}
+
+// ═══════════════════════════════════════════════════════════
+//  РСЯ API: тест и токен
+// ═══════════════════════════════════════════════════════════
+
+async function testRsyaApi() {
+  el.btnTestRsya.disabled = true;
+  el.btnTestRsya.textContent = '...';
+  el.rsyaStatus.className = 'rsya-status';
+  el.rsyaStatus.textContent = 'Проверяю доступ к API...';
+
+  try {
+    const result = await sendMsg('testRsyaApi');
+
+    if (result.success) {
+      const apps = result.data?.apps || [];
+      const fields = result.data?._discoveredFields;
+      const dates = apps.length > 0
+        ? Object.keys(apps[0].metrics?.impressions || {}).length
+        : 0;
+
+      let info = `✓ API работает! ${apps.length} приложений, ${dates} дней.`;
+      if (fields) {
+        info += `\nПоля: ${JSON.stringify(fields.metrics)}`;
+      }
+      if (result.data?._debugLog) {
+        console.log('[AMH] RSYA API debug log:', result.data._debugLog);
+      }
+
+      el.rsyaStatus.className = 'rsya-status ok';
+      el.rsyaStatus.textContent = info;
+    } else {
+      const err = result.error || 'Неизвестная ошибка';
+      let hint = '';
+      if (err.includes('HTTP 401') || err.includes('HTTP 403')) {
+        hint = '\n→ Нужен OAuth-токен. Вставьте его в поле ниже.';
+      } else if (err.includes('HTTP 429')) {
+        hint = '\n→ Слишком много запросов. Подождите.';
+      } else if (err.includes('Failed to fetch') || err.includes('NetworkError')) {
+        hint = '\n→ Нет сети или CORS заблокирован.';
+      }
+      if (result._debugLog) {
+        console.log('[AMH] RSYA API debug log:', result._debugLog);
+      }
+
+      el.rsyaStatus.className = 'rsya-status fail';
+      el.rsyaStatus.textContent = `✗ ${err}${hint}`;
+    }
+  } catch (e) {
+    el.rsyaStatus.className = 'rsya-status fail';
+    el.rsyaStatus.textContent = `✗ ${e.message}`;
+  } finally {
+    el.btnTestRsya.disabled = false;
+    el.btnTestRsya.textContent = 'Тест';
+  }
+}
+
+async function saveRsyaToken() {
+  const token = el.fRsyaToken.value.trim();
+  await sendMsg('saveRsyaToken', { token });
+  if (token) {
+    const orig = el.btnSaveToken.textContent;
+    el.btnSaveToken.textContent = '✓';
+    setTimeout(() => { el.btnSaveToken.textContent = orig; }, 1200);
+  }
 }
