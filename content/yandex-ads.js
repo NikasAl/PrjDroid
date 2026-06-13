@@ -60,13 +60,30 @@ if (window.__amhRsyaLoaded) {
   }
 
   /**
-   * Поиск ID поля по ключевым словам в label/title/id.
+   * Найти поле по точному id (приоритет) или по keywords в label/title.
+   * exactIds — массив точных id для прямого match.
+   * keywords — фоллбэк, ищет в label/title/id.
    */
-  function findFieldId(fields, ...keywords) {
+  function findFieldId(fields, exactIds = [], keywords = []) {
     if (!fields || !Array.isArray(fields)) return null;
-    for (const f of fields) {
-      const haystack = ((f.label || '') + ' ' + (f.title || '') + ' ' + (f.id || '')).toLowerCase();
-      if (keywords.some((kw) => haystack.includes(kw.toLowerCase()))) return f.id;
+
+    // 1. Точный match по id
+    for (const eid of exactIds) {
+      const found = fields.find(f => f.id === eid);
+      if (found) return found.id;
+    }
+
+    // 2. Fuzzy по label/title/id
+    if (keywords.length > 0) {
+      for (const f of fields) {
+        const haystack = ((f.label || '') + ' ' + (f.title || '') + ' ' + (f.id || '')).toLowerCase();
+        if (keywords.some((kw) => haystack.includes(kw.toLowerCase()))) {
+          // Проверяем что это не "своя реклама" или "Я.Директ"
+          const id = f.id || '';
+          if (id.includes('_own') || id.includes('_direct') || id.includes('rec_')) continue;
+          return f.id;
+        }
+      }
     }
     return null;
   }
@@ -98,22 +115,22 @@ if (window.__amhRsyaLoaded) {
 
       log('tree', `node="${node.id}" (${node.title}), entity_fields=${ef.length}, fields=${mf.length}`);
 
-      // ── 2. Обнаруживаем ID полей по названиям ──
-      const appIdField = findFieldId(ef, 'page id', 'page_id');
-      const appNameField = findFieldId(ef, 'название пейджа', 'page name', 'page caption', 'название блока');
-      const blockTypeField = findFieldId(ef, 'блочный уровень', 'block level', 'тип блока', 'block type', 'ad format', 'ad unit name', 'блок');
+      // ── 2. Обнаруживаем ID полей ──
+      const appNameField = findFieldId(ef, ['page_caption'], ['название сайта', 'название приложения', 'page caption', 'page name']);
+      const appIdField = findFieldId(ef, ['page_id'], ['page id']);
 
-      const revenueField = findFieldId(mf, 'вознаграждение', 'доход', 'revenue', 'partner_wo');
-      const showsField = findFieldId(mf, 'показы рекламы', 'показы в блок', 'shows');
-      const showsVisibleField = findFieldId(mf, 'видимые показы', 'visible shows', 'visible impressions');
-      const clicksField = findFieldId(mf, 'клик', 'click');
-      const ecpmField = findFieldId(mf, 'ecpm');
+      const revenueField = findFieldId(mf, ['partner_wo_nds'], ['вознаграждение', 'доход', 'revenue']);
+      const showsField = findFieldId(mf, ['shows'], ['видимые показы', 'показы рекламы']);
+      const impressionsField = findFieldId(mf, ['impressions'], ['показы']);
+      const clicksField = findFieldId(mf, ['clicks'], ['клик']);
+      const ecpmField = findFieldId(mf, ['ecpm_partner_wo_nds'], ['ecpm']);
 
-      const effectiveShows = showsField || showsVisibleField;
+      // Показы: prioritise shows (видимые) over impressions
+      const effectiveShows = showsField || impressionsField;
 
       log('fields', JSON.stringify({
-        entity: { appIdField, appNameField, blockTypeField },
-        metrics: { revenueField, showsField: effectiveShows, showsVisibleField, clicksField, ecpmField },
+        entity: { appIdField, appNameField },
+        metrics: { revenueField, showsField: effectiveShows, impressionsField, clicksField, ecpmField },
       }));
 
       if (!appIdField && !appNameField) {
@@ -125,67 +142,32 @@ if (window.__amhRsyaLoaded) {
 
       // ── 3. Параметры запроса ──
       const entityFields = [];
-      if (appIdField) entityFields.push(appIdField);
-      if (appNameField && appNameField !== appIdField) entityFields.push(appNameField);
-      const useBlockType = !!blockTypeField && blockTypeField !== appIdField && blockTypeField !== appNameField;
-      if (useBlockType) entityFields.push(blockTypeField);
+      if (appNameField) entityFields.push(appNameField);
 
-      const metricFields = [revenueField, effectiveShows, clicksField, ecpmField].filter(Boolean);
+      const metricFields = [revenueField, effectiveShows, clicksField].filter(Boolean);
 
-      // ── 4. get.json с пагинацией ──
-      const allPoints = [];
-      let offset = 0;
-      const limit = 1000;
-      let pageNum = 0;
+      // ── 4. get.json (90 дней, один запрос) ──
+      const params = {
+        dimension_field: 'date|day',
+        period: '90days',
+        entity_field: entityFields,
+        field: metricFields,
+      };
 
-      while (true) {
-        pageNum++;
-        const params = {
-          dimension_field: 'date|day',
-          period: '90days',
-          pretty: 1,
-          limits: JSON.stringify({ limit, offset }),
-          entity_field: entityFields,
-          field: metricFields,
-        };
+      const data = await rsyaApiFetch('get.json', params, token);
 
-        const data = await rsyaApiFetch('get.json', params, token);
-
-        if (data.result !== 'ok') {
-          throw new Error(`get.json: result="${data.result}"`);
-        }
-
-        const points = data.data?.points || [];
-        allPoints.push(...points);
-
-        log('page', `${pageNum}: ${points.length} точек (всего: ${allPoints.length})`);
-
-        if (data.data?.is_last_page !== false || points.length === 0) break;
-        offset += limit;
-        if (pageNum >= 10) break;
+      if (data.result !== 'ok') {
+        const errMsg = data.errors
+          ? Object.entries(data.errors).map(([k,v]) => `${k}: ${v}`).join('; ')
+          : `result="${data.result}"`;
+        throw new Error(`get.json: ${errMsg}`);
       }
 
+      const allPoints = data.data?.points || [];
       log('total', `${allPoints.length} точек данных`);
 
-      // ── 5. Определяем ключи dimensions ──
-      let appNameKey = null;
-      let blockTypeKey = null;
-
-      for (const point of allPoints) {
-        const dims = point.dimensions || {};
-        for (const key of Object.keys(dims)) {
-          if (key === 'date') continue;
-          const val = dims[key];
-          if (typeof val === 'string' && val.length > 2 && !appNameKey) {
-            appNameKey = key;
-          } else if (typeof val === 'string' && val.length > 0 && appNameKey && key !== appNameKey && !blockTypeKey) {
-            blockTypeKey = key;
-          }
-        }
-        if (appNameKey) break;
-      }
-
-      log('keys', JSON.stringify({ appNameKey, blockTypeKey }));
+      // ── 5. Ключ группировки — это наш entity_field (page_caption) ──
+      const appNameKey = appNameField;
 
       // ── 6. Группируем по приложениям и датам ──
       const appsMap = {};
