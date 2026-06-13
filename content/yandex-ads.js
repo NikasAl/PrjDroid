@@ -1,5 +1,5 @@
 // content/yandex-ads.js — РСЯ Dashboard Parser
-// Парсит виртуализированные таблицы с дэшборда https://partner.yandex.ru/v2/dashboard
+// Парсит виртуализированные таблицы fixedDataTable с дэшборда
 
 (function () {
   'use strict';
@@ -13,19 +13,19 @@
     console.log(`[AMH-RSYA ${step}]`, detail);
   }
 
-  // ── Хелперы парсинга ──
+  // ── Хелперы ──
 
   function parseNum(s) {
     if (!s || typeof s !== 'string') return 0;
-    const cleaned = s.replace(/\u205f/g, '').replace(/\s/g, '').replace(/[^\d.\-]/g, '');
-    const v = parseFloat(cleaned.replace(',', '.'));
+    const c = s.replace(/\u205f/g, '').replace(/\s/g, '').replace(/[^\d.\-]/g, '');
+    const v = parseFloat(c.replace(',', '.'));
     return isNaN(v) ? 0 : v;
   }
 
   function parseMoney(s) {
     if (!s || typeof s !== 'string') return 0;
-    const cleaned = s.replace(/\u205f/g, '').replace(/[₽\s]/g, '').replace(',', '.');
-    const v = parseFloat(cleaned);
+    const c = s.replace(/\u205f/g, '').replace(/[₽\s]/g, '').replace(',', '.');
+    const v = parseFloat(c);
     return isNaN(v) ? 0 : v;
   }
 
@@ -46,157 +46,156 @@
   function getText(el) {
     if (!el) return '';
     return (el.textContent || el.innerText || '')
-      .replace(/&nbsp;/g, ' ')
-      .replace(/\u205f/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
+      .replace(/&nbsp;/g, ' ').replace(/\u205f/g, ' ').replace(/\s+/g, ' ').trim();
   }
 
-  // ── Скролл виртуализированной таблицы до конца ──
+  // ── Скролл виртуализированной таблицы ──
 
-  async function scrollTableToEnd(widgetEl) {
-    const scrollable = widgetEl.querySelector('.public_fixedDataTable_rowsContainer')
-      || widgetEl.querySelector('.fixedDataTableCellGroupLayout_main')
-      || widgetEl.querySelector('[style*="overflow"]');
+  async function scrollWidgetTable(widgetEl) {
+    // Ищем scrollable контейнер внутри виджета
+    const scrollable =
+      widgetEl.querySelector('.public_fixedDataTable_body') ||
+      widgetEl.querySelector('.fixedDataTableLayout_rowsContainer');
 
     if (!scrollable) {
-      log('scroll', 'no scrollable container found, skipping scroll');
+      log('scroll', 'scrollable not found, skip');
       return;
     }
 
+    // Даём tiny delay чтобы браузер отрисовал
+    await DELAY(200);
+
     const maxScroll = scrollable.scrollHeight - scrollable.clientHeight;
-    log('scroll', `scrollHeight=${scrollable.scrollHeight}, clientHeight=${scrollable.clientHeight}, maxScroll=${maxScroll}`);
-
-    if (maxScroll <= 0) return;
-
-    // Скроллим порциями, ожидая подгрузки
-    const step = Math.max(200, Math.floor(maxScroll / 30));
-    let current = 0;
-    while (current < maxScroll) {
-      current = Math.min(current + step, maxScroll);
-      scrollable.scrollTop = current;
-      await DELAY(150);
+    if (maxScroll <= 0) {
+      log('scroll', `no scroll needed (scrollHeight=${scrollable.scrollHeight})`);
+      return;
     }
 
-    // Скроллим обратно наверх для надёжности
+    log('scroll', `scrolling ${maxScroll}px`);
+    const step = Math.max(200, Math.floor(maxScroll / 40));
+    let pos = 0;
+
+    while (pos < maxScroll) {
+      pos = Math.min(pos + step, maxScroll);
+      scrollable.scrollTop = pos;
+      await DELAY(120);
+    }
+
+    // Скролл наверх
     scrollable.scrollTop = 0;
-    await DELAY(300);
-    log('scroll', 'scroll complete');
+    await DELAY(200);
+    log('scroll', `done, final cells will be read now`);
   }
 
   // ── Определить порядок метрик по заголовкам ──
 
-  function buildMetricOrder(headerTexts) {
+  function buildMetricInfo(headerTexts) {
+    // Возвращаем: { order: [...], fieldsPerRow: N }
+    // Заголовки двойные: "Метрика" | "Сумма" — пропускаем суммы
     const order = [];
-    let hasImpressions = false;
     for (const h of headerTexts) {
       const hl = h.toLowerCase();
       if (hl === 'дата' || hl === 'тип блока' || hl === 'итого' || hl === '') continue;
-      if (/\d/.test(h)) continue;
+      if (/\d/.test(h)) continue; // пропускаем ячейки-суммы
       if (hl.includes('вознаграждение')) order.push('revenue');
-      else if (hl.includes('видимые показы')) {
-        // Запоминаем но пока не добавляем — если будет "Показы", он заменит
-        order.push('visibleImpressions');
-      }
-      else if (hl === 'показы') {
-        // Если уже есть visibleImpressions — заменим
-        const vi = order.indexOf('visibleImpressions');
-        if (vi >= 0) order[vi] = 'impressions';
-        else order.push('impressions');
-        hasImpressions = true;
-      }
+      else if (hl.includes('видимые показы')) order.push('visibleImpressions');
+      else if (hl === 'показы') order.push('impressions');
       else if (hl === 'ecpm') order.push('ecpm');
       else if (hl.includes('клик')) order.push('clicks');
       else if (hl.includes('ctr')) order.push('ctr');
     }
-    // Если visibleImpressions остался (нет "Показы") — считаем как impressions
+
+    // Если есть "Видимые показы" но нет "Показы" — используем видимые как показы
+    const hasImpressions = order.includes('impressions');
     for (let i = 0; i < order.length; i++) {
-      if (order[i] === 'visibleImpressions') order[i] = 'impressions';
+      if (order[i] === 'visibleImpressions' && !hasImpressions) {
+        order[i] = 'impressions';
+      }
     }
-    return order;
+
+    const hasBlockType = headerTexts.some(h => h.toLowerCase() === 'тип блока');
+    const fieldsPerRow = 1 + (hasBlockType ? 1 : 0) + order.length;
+
+    return { order, hasBlockType, fieldsPerRow };
   }
 
-  // ── Парсинг одного виджета (ПОСЛЕ скролла) ──
+  // ── Парсинг строк из ячеек ──
 
-  function parseWidget(widgetEl) {
-    const linkEl = widgetEl.querySelector('[data-testid="Link"]');
-    const appName = getText(linkEl) || 'Unknown App';
-
-    const headerEls = widgetEl.querySelectorAll('[data-testid^="HeaderCell"]');
-    const headerTexts = Array.from(headerEls).map(getText).filter(Boolean);
-    const metricOrder = buildMetricOrder(headerTexts);
-    const hasBlockType = headerTexts.some(h => h.toLowerCase() === 'тип блока');
-    const fieldsPerRow = 1 + (hasBlockType ? 1 : 0) + metricOrder.length;
-
-    log('parseWidget', `${appName} | metrics: ${JSON.stringify(metricOrder)} | fieldsPerRow: ${fieldsPerRow}`);
-
-    const cellEls = widgetEl.querySelectorAll('[data-testid="Cell"]');
-    const cellTexts = Array.from(cellEls).map(getText).filter(Boolean);
-
-    if (cellTexts.length === 0) {
-      return { appName, rows: [] };
-    }
-
-    log('parseWidget', `${appName}: ${cellTexts.length} cells total`);
-
-    // Строгий разбор: каждая строка = fieldsPerRow ячеек
+  function parseRows(cellTexts, metricInfo) {
+    const { order, fieldsPerRow } = metricInfo;
     const rows = [];
     let i = 0;
 
     while (i < cellTexts.length) {
-      const date = parseDate(cellTexts[i]);
-      if (!date) { i++; continue; }
+      if (parseDate(cellTexts[i])) {
+        if (i + fieldsPerRow > cellTexts.length) break;
+        const row = { date: parseDate(cellTexts[i]) };
+        let offset = 1;
 
-      // Проверяем что хватает ячеек на полную строку
-      if (i + fieldsPerRow > cellTexts.length) break;
+        if (metricInfo.hasBlockType) {
+          row.blockType = cellTexts[i + offset] || '';
+          offset = 2;
+        }
 
-      const row = { date };
-      let offset = 1;
+        for (let mi = 0; mi < order.length; mi++) {
+          const val = cellTexts[i + offset + mi];
+          const metric = order[mi];
+          if (metric === 'revenue' || metric === 'ecpm') {
+            row[metric] = parseMoney(val);
+          } else {
+            row[metric] = parseNum(val);
+          }
+        }
 
-      if (hasBlockType) {
-        row.blockType = cellTexts[i + offset] || '';
-        offset = 2;
+        rows.push(row);
+        i += fieldsPerRow;
+      } else {
+        i++;
       }
-
-      // Читаем метрики строго по порядку
-      for (let mi = 0; mi < metricOrder.length; mi++) {
-        const val = cellTexts[i + offset + mi];
-        const metric = metricOrder[mi];
-        if (metric === 'revenue') row.revenue = parseMoney(val);
-        else if (metric === 'impressions' || metric === 'clicks') row[metric] = parseNum(val);
-        else if (metric === 'ecpm') row.ecpm = parseMoney(val);
-        else row[metric] = val; // CTR и прочие — как текст
-      }
-
-      rows.push(row);
-      i += fieldsPerRow;
     }
 
-    log('parseWidget', `${appName}: ${rows.length} rows parsed`);
-    return { appName, rows };
+    return rows;
   }
 
-  // ── Агрегация по дате+тип блока, с отдельными метриками ──
+  // ── Построить метрики { impressions: {date: val}, revenue: {...}, ... } ──
 
   function buildMetrics(rows, metricOrder) {
-    // impressions, revenue, clicks, ecpm — каждая { date: value }
     const metrics = {};
-    for (const metric of ['impressions', 'revenue', 'clicks', 'ecpm']) {
-      if (metricOrder.includes(metric)) {
-        metrics[metric] = {};
-      }
+    for (const m of metricOrder) {
+      // visibleImpressions не сохраняем отдельно — он уже в impressions
+      if (m === 'visibleImpressions') continue;
+      metrics[m] = {};
     }
-
     for (const row of rows) {
-      for (const metric of Object.keys(metrics)) {
-        const val = row[metric];
-        if (val !== undefined) {
-          metrics[metric][row.date] = val;
+      for (const m of Object.keys(metrics)) {
+        if (row[m] !== undefined) {
+          metrics[m][row.date] = row[m];
         }
       }
     }
-
     return metrics;
+  }
+
+  // ── Поиск виджетов ──
+
+  function findWidgets() {
+    // Основной способ: по data-testid
+    let widgets = document.querySelectorAll('[data-testid="piWidgetRenderer.WidgetStatisticsTable"]');
+
+    if (widgets.length > 0) return Array.from(widgets);
+
+    // Фолбэк: ищем Card-контейнеры с таблицами fixedDataTable
+    // Каждый виджет обёрнут в dc-Card с заголовком-ссылкой и таблицей
+    const cards = document.querySelectorAll('.dc-Card');
+    const result = [];
+    for (const card of cards) {
+      const link = card.querySelector('a[data-testid="Link"]');
+      const table = card.querySelector('.public_fixedDataTable_main');
+      if (link && table) {
+        result.push(card);
+      }
+    }
+    return result;
   }
 
   // ── Главный сборщик ──
@@ -205,7 +204,7 @@
     try {
       log('init', window.location.href);
 
-      const widgets = document.querySelectorAll('[data-testid="piWidgetRenderer.WidgetStatisticsTable"]');
+      const widgets = findWidgets();
 
       if (widgets.length === 0) {
         throw new Error('Таблицы статистики не найдены на странице.');
@@ -218,21 +217,35 @@
       for (let wi = 0; wi < widgets.length; wi++) {
         const widget = widgets[wi];
 
-        // Скроллим таблицу чтобы подгрузить все строки
-        log('scrollWidget', `widget ${wi}...`);
-        await scrollTableToEnd(widget);
+        // Скроллим чтобы подгрузить все строки
+        await scrollWidgetTable(widget);
 
-        // Читаем заголовки чтобы знать метрики
+        // Название
+        const linkEl = widget.querySelector('[data-testid="Link"]');
+        const appName = getText(linkEl) || `App ${wi + 1}`;
+
+        // Заголовки
         const headerEls = widget.querySelectorAll('[data-testid^="HeaderCell"]');
         const headerTexts = Array.from(headerEls).map(getText).filter(Boolean);
-        const metricOrder = buildMetricOrder(headerTexts);
+        const metricInfo = buildMetricInfo(headerTexts);
 
-        const parsed = parseWidget(widget);
-        const metrics = buildMetrics(parsed.rows, metricOrder);
+        log('widget', `${appName} | metrics: ${JSON.stringify(metricInfo.order)} | fieldsPerRow: ${metricInfo.fieldsPerRow}`);
+
+        // Ячейки
+        const cellEls = widget.querySelectorAll('[data-testid="Cell"]');
+        const cellTexts = Array.from(cellEls).map(getText).filter(Boolean);
+
+        log('widget', `${appName}: ${cellTexts.length} cells`);
+
+        // Парсим
+        const rows = parseRows(cellTexts, metricInfo);
+        const metrics = buildMetrics(rows, metricInfo.order);
+
+        log('widget', `${appName}: ${rows.length} rows, dates: ${Object.keys(metrics.impressions || {}).length}`);
 
         allApps.push({
-          appId: parsed.appName,
-          name: parsed.appName,
+          appId: appName,
+          name: appName,
           platform: 'rsya',
           metrics,
         });
