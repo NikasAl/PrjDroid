@@ -2,6 +2,11 @@
 // Важно: все fetch к partner.yandex.ru идут ЗДЕСЬ, т.к. content script выполняется
 // в контексте partner.yandex.ru и имеет доступ к cookies этого домена.
 
+if (window.__amhRsyaLoaded) {
+  // Уже загружен (через manifest или предыдущий inject)
+} else {
+  window.__amhRsyaLoaded = true;
+
 (function () {
   'use strict';
 
@@ -708,3 +713,5 @@
     }
   });
 })();
+
+} // end __amhRsyaLoaded guard

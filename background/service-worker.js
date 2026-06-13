@@ -102,11 +102,17 @@ function waitForTabLoad(tabId) {
   });
 }
 
-async function sendToTab(tabId, message, retries = 6, delay = 1500) {
+async function sendToTab(tabId, message, retries = 4, delay = 1000) {
   for (let i = 0; i < retries; i++) {
     try {
       return await chrome.tabs.sendMessage(tabId, message);
     } catch (_) {
+      // При первой ошибке пробуем инжектить content script
+      if (i === 0) {
+        try {
+          await injectContentScript(tabId);
+        } catch (_) {}
+      }
       if (i === retries - 1)
         throw new Error(
           `Не удалось отправить сообщение в таб ${tabId} после ${retries} попыток`
@@ -114,6 +120,30 @@ async function sendToTab(tabId, message, retries = 6, delay = 1500) {
       await new Promise((r) => setTimeout(r, delay));
     }
   }
+}
+
+/**
+ * Инжект content script в вкладку если он не загрузился автоматически
+ * (например, вкладка была открыта до установки расширения).
+ */
+async function injectContentScript(tabId) {
+  const tab = await chrome.tabs.get(tabId);
+  const url = tab.url || '';
+
+  let file = null;
+  if (url.includes('partner.yandex.ru')) file = 'content/yandex-ads.js';
+  else if (url.includes('console.rustore.ru/apps/') && url.includes('/statistics')) file = 'content/rustore.js';
+  else if (/console\.rustore\.ru\/apps\/?$/.test(url)) file = 'content/rustore-apps.js';
+  else if (url.includes('play.google.com/console')) file = 'content/googleplay.js';
+
+  if (!file) return;
+
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: [file],
+  });
+  console.log(`[AMH] Injected ${file} into tab ${tabId}`);
+  await new Promise(r => setTimeout(r, 300));
 }
 
 // ═══════════════════════════════════════════════════════════
