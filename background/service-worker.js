@@ -55,6 +55,28 @@ function mergeData(stored, platform, appId, metrics) {
   return stored;
 }
 
+// Мердж данных РСЯ: несколько приложений с дэшборда за один вызов
+function mergeRsyaData(stored, apps) {
+  for (const app of apps) {
+    const appId = app.appId;
+    // impressions, revenue, clicks — каждая метрика это { date: value }
+    for (const metric of ['impressions', 'revenue', 'clicks']) {
+      const dateValues = (app.metrics[metric] || {});
+      // Отделяем числовые значения от прочих полей
+      const cleanValues = {};
+      for (const [date, val] of Object.entries(dateValues)) {
+        if (typeof val === 'number' && /\d{4}-\d{2}-\d{2}/.test(date)) {
+          cleanValues[date] = val;
+        }
+      }
+      if (Object.keys(cleanValues).length > 0) {
+        mergeData(stored, 'rsya', appId, { [metric]: cleanValues });
+      }
+    }
+  }
+  return stored;
+}
+
 // ═══════════════════════════════════════════════════════════
 //  Таб-менеджмент: открытие, ожидание загрузки, отправка сообщения
 // ═══════════════════════════════════════════════════════════
@@ -113,8 +135,9 @@ async function collectFromUrl(url, platform, reuseTabId) {
     }
 
     await waitForTabLoad(tabId);
-    // SPA — даём React время отрендерить
-    await new Promise((r) => setTimeout(r, 3500));
+    // SPA — даём фреймворку время отрендерить (РСЯ грузит таблицы дольше)
+    const spaDelay = platform === 'rsya' ? 6000 : 3500;
+    await new Promise((r) => setTimeout(r, spaDelay));
 
     const action = PLATFORM_ACTION[platform];
     if (!action) throw new Error(`Неизвестная платформа: ${platform}`);
@@ -163,10 +186,17 @@ async function collectAll() {
     try {
       const { data, tabId: usedTabId } = await collectFromUrl(app.url, app.platform, workerTabId);
       if (usedTabId) workerTabId = usedTabId;
-      const metrics = data.metrics || {};
-      const effectiveAppId = data.appId || app.appId;
-      dailyData = mergeData(dailyData, app.platform, effectiveAppId, metrics);
-      results.push({ app: app.name, success: true, appId: effectiveAppId });
+
+      if (data.platform === 'rsya' && data.apps) {
+        // РСЯ дэшборд: один URL возвращает данные по нескольким приложениям
+        mergeRsyaData(dailyData, data.apps);
+        results.push({ app: `${data.apps.length} РСЯ приложений`, success: true });
+      } else {
+        const metrics = data.metrics || {};
+        const effectiveAppId = data.appId || app.appId;
+        dailyData = mergeData(dailyData, app.platform, effectiveAppId, metrics);
+        results.push({ app: app.name, success: true, appId: effectiveAppId });
+      }
     } catch (e) {
       results.push({ app: app.name, success: false, error: e.message });
     }
@@ -450,15 +480,22 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           .then(async (resp) => {
             if (resp?.success) {
               const data = resp.data;
-              const metrics = data.metrics || {};
               const dailyData = await getDailyData();
-              const merged = mergeData(
-                dailyData,
-                data.platform,
-                data.appId,
-                metrics
-              );
-              await saveDailyData(merged);
+
+              if (data.platform === 'rsya' && data.apps) {
+                // РСЯ дэшборд: несколько приложений за раз
+                mergeRsyaData(dailyData, data.apps);
+                await saveDailyData(dailyData);
+              } else {
+                const metrics = data.metrics || {};
+                const merged = mergeData(
+                  dailyData,
+                  data.platform,
+                  data.appId,
+                  metrics
+                );
+                await saveDailyData(merged);
+              }
             }
             sendResponse(resp);
           })
