@@ -22,6 +22,7 @@ const el = {
   fDateFrom: $('#f-date-from'),
   fDateTo: $('#f-date-to'),
   btnApply: $('#btn-apply'),
+  btnManageApps: $('#btn-manage-apps'),
   btnCollect: $('#btn-collect'),
   collectStatus: $('#collect-status'),
   summaryCards: $('#summary-cards'),
@@ -47,6 +48,9 @@ async function init() {
 
   el.btnApply.addEventListener('click', applyFilters);
   el.btnCollect.addEventListener('click', collectData);
+  el.btnManageApps.addEventListener('click', () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL('apps/apps.html') });
+  });
   el.btnGenPrompt.addEventListener('click', generatePrompt);
   el.btnCopyPrompt.addEventListener('click', copyPrompt);
 

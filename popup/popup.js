@@ -1,4 +1,4 @@
-// popup/popup.js — UI-логика расширения App Metrics Harvester
+// popup/popup.js — Упрощённый UI (редактор перенесён на apps/apps.html)
 
 document.addEventListener('DOMContentLoaded', init);
 
@@ -9,37 +9,20 @@ document.addEventListener('DOMContentLoaded', init);
 const $ = (sel) => document.querySelector(sel);
 const el = {
   appList: $('#app-list'),
-  addForm: $('#add-form'),
-  fName: $('#f-name'),
-  fPlatform: $('#f-platform'),
-  fAppId: $('#f-appid'),
-  fUrl: $('#f-url'),
-  btnAdd: $('#btn-add'),
+  appCount: $('#app-count'),
+  btnManageApps: $('#btn-manage-apps'),
   btnScanRuStore: $('#btn-scan-rustore'),
-  btnSaveApp: $('#btn-save-app'),
-  btnCancelAdd: $('#btn-cancel-add'),
   btnCollectAll: $('#btn-collect-all'),
   btnCollectCurrent: $('#btn-collect-current'),
   statusBar: $('#status-bar'),
   dataSummary: $('#data-summary'),
   btnExport: $('#btn-export'),
   btnClear: $('#btn-clear'),
-  // РСЯ API
   btnTestRsya: $('#btn-test-rsya'),
   rsyaStatus: $('#rsya-status'),
   fRsyaToken: $('#f-rsya-token'),
   btnSaveToken: $('#btn-save-token'),
-  // Dashboard
   btnDashboard: $('#btn-dashboard'),
-  // Extra fields
-  btnToggleExtra: $('#btn-toggle-extra'),
-  extraFields: $('#extra-fields'),
-  fGroupId: $('#f-group-id'),
-  fRustoreUrl: $('#f-rustore-url'),
-  fGpUrl: $('#f-gp-url'),
-  fRepoUrl: $('#f-repo-url'),
-  groupList: $('#group-list'),
-  formMode: $('#form-mode'),
 };
 
 // ═══════════════════════════════════════════════════════════
@@ -48,15 +31,14 @@ const el = {
 
 let apps = [];
 let dailyData = {};
-let editingAppId = null; // id редактируемого приложения (null = добавление)
 
 // ═══════════════════════════════════════════════════════════
 //  Init
 // ═══════════════════════════════════════════════════════════
 
 async function init() {
-  apps = await sendMsg('getApps') || [];
-  dailyData = await sendMsg('getDailyData') || {};
+  apps = (await sendMsg('getApps')) || [];
+  dailyData = (await sendMsg('getDailyData')) || {};
   renderAppList();
   renderDataSummary();
   updateButtons();
@@ -79,12 +61,10 @@ async function init() {
 // ═══════════════════════════════════════════════════════════
 
 function bindEvents() {
-  el.btnAdd.addEventListener('click', () => openForm());
+  el.btnManageApps.addEventListener('click', () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL('apps/apps.html') });
+  });
   el.btnScanRuStore.addEventListener('click', scanRuStoreApps);
-  el.btnCancelAdd.addEventListener('click', closeForm);
-  el.btnSaveApp.addEventListener('click', saveApp);
-  el.fPlatform.addEventListener('change', autofillUrl);
-  el.fAppId.addEventListener('input', autofillUrl);
   el.btnCollectAll.addEventListener('click', collectAll);
   el.btnCollectCurrent.addEventListener('click', collectCurrentPage);
   el.btnExport.addEventListener('click', exportMarkdown);
@@ -92,142 +72,36 @@ function bindEvents() {
   el.btnTestRsya.addEventListener('click', testRsyaApi);
   el.btnSaveToken.addEventListener('click', saveRsyaToken);
   el.btnDashboard.addEventListener('click', () => chrome.runtime.openOptionsPage());
-  el.btnToggleExtra.addEventListener('click', () => {
-    el.extraFields.classList.toggle('hidden');
-    el.btnToggleExtra.textContent = el.extraFields.classList.contains('hidden') ? 'Доп. поля ▾' : 'Доп. поля ▴';
-  });
 }
 
 // ═══════════════════════════════════════════════════════════
-//  Форма: открытие / закрытие / сохранение
+//  App list (read-only)
 // ═══════════════════════════════════════════════════════════
-
-function openForm(appId) {
-  editingAppId = appId || null;
-  populateGroupDatalist();
-
-  if (editingAppId) {
-    // Режим редактирования
-    const app = apps.find(a => a.id === editingAppId);
-    if (!app) return;
-    el.fName.value = app.name || '';
-    el.fPlatform.value = app.platform || 'rustore';
-    el.fAppId.value = app.appId || '';
-    el.fUrl.value = app.url || '';
-    el.fGroupId.value = app.groupId || '';
-    el.fRustoreUrl.value = app.rustoreUrl || '';
-    el.fGpUrl.value = app.googlePlayUrl || '';
-    el.fRepoUrl.value = app.repoUrl || '';
-    el.formMode.textContent = 'Редактирование';
-    el.btnSaveApp.textContent = 'Обновить';
-  } else {
-    // Режим добавления
-    clearForm();
-    el.formMode.textContent = '';
-    el.btnSaveApp.textContent = 'Сохранить';
-  }
-
-  el.addForm.classList.remove('hidden');
-  el.fName.focus();
-}
-
-function closeForm() {
-  el.addForm.classList.add('hidden');
-  el.extraFields.classList.add('hidden');
-  el.btnToggleExtra.textContent = 'Доп. поля ▾';
-  clearForm();
-  editingAppId = null;
-}
-
-function clearForm() {
-  el.fName.value = '';
-  el.fPlatform.value = 'rustore';
-  el.fAppId.value = '';
-  el.fUrl.value = '';
-  el.fGroupId.value = '';
-  el.fRustoreUrl.value = '';
-  el.fGpUrl.value = '';
-  el.fRepoUrl.value = '';
-  el.formMode.textContent = '';
-  el.btnSaveApp.textContent = 'Сохранить';
-}
-
-function populateGroupDatalist() {
-  const groups = new Set();
-  for (const a of apps) {
-    if (a.groupId) groups.add(a.groupId);
-  }
-  el.groupList.innerHTML = [...groups].map(g => `<option value="${esc(g)}">`).join('');
-}
-
-function autofillUrl() {
-  const platform = el.fPlatform.value;
-  const appId = el.fAppId.value.trim();
-  if (!appId) return;
-  const urls = {
-    rustore: `https://console.rustore.ru/apps/${appId}/statistics`,
-    googleplay: '',
-    rsya: '',
-  };
-  if (urls[platform] && !el.fUrl.value) {
-    el.fUrl.value = urls[platform];
-  }
-}
-
-async function saveApp() {
-  const name = el.fName.value.trim();
-  const platform = el.fPlatform.value;
-  const appId = el.fAppId.value.trim();
-  let url = el.fUrl.value.trim();
-  const groupId = el.fGroupId.value.trim();
-  const rustoreUrl = el.fRustoreUrl.value.trim();
-  const googlePlayUrl = el.fGpUrl.value.trim();
-  const repoUrl = el.fRepoUrl.value.trim();
-
-  if (!name) return alert('Введите название приложения');
-  if (!appId) return alert('Введите App ID');
-
-  if (!url) {
-    if (platform === 'rustore') {
-      url = `https://console.rustore.ru/apps/${appId}/statistics`;
-    } else {
-      return alert('Введите URL статистики');
-    }
-  }
-
-  if (editingAppId) {
-    // Обновляем существующее
-    const idx = apps.findIndex(a => a.id === editingAppId);
-    if (idx >= 0) {
-      apps[idx] = { ...apps[idx], name, platform, appId, url, groupId, rustoreUrl, googlePlayUrl, repoUrl };
-    }
-  } else {
-    // Добавляем новое
-    apps.push({ id: Date.now().toString(), name, platform, appId, url, groupId, rustoreUrl, googlePlayUrl, repoUrl });
-  }
-
-  await sendMsg('saveApps', { apps });
-  closeForm();
-  renderAppList();
-  updateButtons();
-}
-
-function removeApp(id) {
-  apps = apps.filter((a) => a.id !== id);
-  sendMsg('saveApps', { apps });
-  renderAppList();
-  updateButtons();
-}
 
 function renderAppList() {
-  if (apps.length === 0) {
+  const count = apps.length;
+  el.appCount.textContent = count > 0 ? `(${count})` : '';
+
+  if (count === 0) {
     el.appList.innerHTML = '<p class="empty-state">Нет добавленных приложений</p>';
     return;
   }
 
   const platformLabel = { rustore: 'RuStore', googleplay: 'GP', rsya: 'РСЯ' };
+  const platformOrder = { rsya: 0, rustore: 1, googleplay: 2 };
 
-  el.appList.innerHTML = apps
+  const sorted = [...apps].sort((a, b) => {
+    // Grouped first
+    if (a.groupId && !b.groupId) return -1;
+    if (!a.groupId && b.groupId) return 1;
+    if (a.groupId && b.groupId && a.groupId !== b.groupId) return a.groupId.localeCompare(b.groupId, 'ru');
+    const pa = platformOrder[a.platform] ?? 9;
+    const pb = platformOrder[b.platform] ?? 9;
+    if (pa !== pb) return pa - pb;
+    return a.name.localeCompare(b.name, 'ru');
+  });
+
+  el.appList.innerHTML = sorted
     .map((a) => {
       const groupTag = a.groupId ? `<span class="group-tag" title="Группа: ${esc(a.groupId)}">🔗</span>` : '';
       return `
@@ -235,18 +109,9 @@ function renderAppList() {
       <span class="platform-badge ${a.platform}">${platformLabel[a.platform] || a.platform}</span>
       <span class="app-name" title="${esc(a.name)}">${esc(a.name)}</span>
       ${groupTag}
-      <button class="btn-icon btn-edit" data-edit="${a.id}" title="Редактировать">✎</button>
-      <button class="btn-icon" data-remove="${a.id}" title="Удалить">&times;</button>
     </div>`;
     })
     .join('');
-
-  el.appList.querySelectorAll('[data-remove]').forEach((btn) => {
-    btn.addEventListener('click', () => removeApp(btn.dataset.remove));
-  });
-  el.appList.querySelectorAll('[data-edit]').forEach((btn) => {
-    btn.addEventListener('click', () => openForm(btn.dataset.edit));
-  });
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -294,6 +159,10 @@ async function collectAll() {
     const result = await sendMsg('collectAll');
     if (result.success) {
       dailyData = result.data || {};
+      // Reload apps — РСЯ apps may have been auto-registered
+      apps = (await sendMsg('getApps')) || [];
+      renderAppList();
+
       const errors = result.results.filter((r) => !r.success);
       if (errors.length > 0) {
         const errText = errors.map((e) => `${e.app}: ${e.error}`).join('\n');
@@ -323,7 +192,11 @@ async function collectCurrentPage() {
       if (result.data?._debugLog) {
         console.log('[AMH Debug Log]', result.data._debugLog);
       }
-      dailyData = await sendMsg('getDailyData') || {};
+      dailyData = (await sendMsg('getDailyData')) || {};
+      // Reload apps — РСЯ apps may have been auto-registered
+      apps = (await sendMsg('getApps')) || [];
+      renderAppList();
+
       showStatus('done', `Данные ${result.data?.platform || ''} собраны`);
       renderDataSummary();
       updateButtons();
@@ -346,7 +219,9 @@ function pollStatus() {
     if (!status || status.status !== 'collecting') {
       clearInterval(interval);
       if (status && status.status === 'done') {
-        dailyData = await sendMsg('getDailyData') || {};
+        dailyData = (await sendMsg('getDailyData')) || {};
+        apps = (await sendMsg('getApps')) || [];
+        renderAppList();
         renderDataSummary();
         updateButtons();
         const errors = (status.results || []).filter((r) => !r.success);
@@ -397,8 +272,12 @@ function renderDataSummary() {
   }
 
   const recent = sortedDates.slice(-7);
-  const fmtDate = (d) => { const [, m, day] = d.split('-'); return `${day}.${m}`; };
-  const num = (v) => v !== undefined && v !== null ? Number(v).toLocaleString('ru-RU') : '—';
+  const fmtDate = (d) => {
+    const [, m, day] = d.split('-');
+    return `${day}.${m}`;
+  };
+  const num = (v) =>
+    v !== undefined && v !== null ? Number(v).toLocaleString('ru-RU') : '—';
 
   let html = '';
 
@@ -433,18 +312,23 @@ function renderDataSummary() {
       html += '<h3>РСЯ — Клики</h3>';
       html += buildMiniTable(recent, ids, 'clicks', 'rsya', names, fmtDate, num);
       html += '<h3>РСЯ — Доход</h3>';
-      html += buildMiniTable(recent, ids, 'revenue', 'rsya', names, fmtDate,
-        (v) => (v !== undefined && v !== null ? Number(v).toLocaleString('ru-RU', { minimumFractionDigits: 2 }) + ' ₽' : '—'));
+      html += buildMiniTable(
+        recent, ids, 'revenue', 'rsya', names, fmtDate, num,
+        (v) => (v !== undefined && v !== null ? Number(v).toLocaleString('ru-RU', { minimumFractionDigits: 2 }) + ' ₽' : '—')
+      );
       html += '<h3>РСЯ — eCPM</h3>';
-      html += buildMiniTable(recent, ids, 'ecpm', 'rsya', names, fmtDate,
-        (v) => (v !== undefined && v !== null ? Number(v).toLocaleString('ru-RU', { minimumFractionDigits: 2 }) + ' ₽' : '—'));
+      html += buildMiniTable(
+        recent, ids, 'ecpm', 'rsya', names, fmtDate, num,
+        (v) => (v !== undefined && v !== null ? Number(v).toLocaleString('ru-RU', { minimumFractionDigits: 2 }) + ' ₽' : '—')
+      );
     }
   }
 
   el.dataSummary.innerHTML = html;
 }
 
-function buildMiniTable(dates, ids, metric, platform, names, fmtDate, num) {
+function buildMiniTable(dates, ids, metric, platform, names, fmtDate, num, customFmt) {
+  const fmt = customFmt || num;
   let h = '<table><thead><tr><th>Дата</th>';
   names.forEach((n) => (h += `<th>${esc(n)}</th>`));
   h += '</tr></thead><tbody>';
@@ -452,7 +336,7 @@ function buildMiniTable(dates, ids, metric, platform, names, fmtDate, num) {
     h += `<tr><td>${fmtDate(d)}</td>`;
     ids.forEach((id) => {
       const v = dailyData[platform]?.[id]?.[metric]?.[d];
-      h += `<td>${num(v)}</td>`;
+      h += `<td>${fmt(v)}</td>`;
     });
     h += '</tr>';
   }
@@ -472,7 +356,10 @@ async function exportMarkdown() {
       const origText = el.btnExport.textContent;
       el.btnExport.textContent = 'Скопировано!';
       el.btnExport.classList.add('btn-primary');
-      setTimeout(() => { el.btnExport.textContent = origText; el.btnExport.classList.remove('btn-primary'); }, 1500);
+      setTimeout(() => {
+        el.btnExport.textContent = origText;
+        el.btnExport.classList.remove('btn-primary');
+      }, 1500);
     }
   } catch (e) {
     alert('Ошибка копирования: ' + e.message);
@@ -562,6 +449,8 @@ async function saveRsyaToken() {
   if (token) {
     const orig = el.btnSaveToken.textContent;
     el.btnSaveToken.textContent = '✓';
-    setTimeout(() => { el.btnSaveToken.textContent = orig; }, 1200);
+    setTimeout(() => {
+      el.btnSaveToken.textContent = orig;
+    }, 1200);
   }
 }

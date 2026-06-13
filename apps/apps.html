@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>App Metrics Harvester — Управление приложениями</title>
+  <link rel="stylesheet" href="apps.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-left">
+        <h1>Управление приложениями</h1>
+        <span class="header-sub">Связывайте приложения из разных платформ для агрегации данных</span>
+      </div>
+      <div class="header-actions">
+        <button id="btn-scan-rustore" class="btn btn-ghost" title="Загрузить все приложения из RuStore Console">🔄 Из RuStore</button>
+        <button id="btn-auto-link" class="btn btn-accent" title="Найти похожие имена в разных платформах и связать их">Автосвязывание</button>
+        <button id="btn-add" class="btn btn-primary">+ Добавить</button>
+      </div>
+    </header>
+
+    <!-- Результат автосвязывания -->
+    <div id="link-result" class="link-result hidden"></div>
+
+    <!-- Панель редактирования -->
+    <div id="edit-panel" class="edit-panel hidden">
+      <h3 id="edit-title">Добавить приложение</h3>
+      <div class="form-grid">
+        <div class="form-field">
+          <label for="f-name">Название</label>
+          <input id="f-name" type="text" placeholder="Название приложения" />
+        </div>
+        <div class="form-field">
+          <label for="f-platform">Платформа</label>
+          <select id="f-platform">
+            <option value="rustore">RuStore</option>
+            <option value="googleplay">Google Play Console</option>
+            <option value="rsya">РСЯ (Yandex Ads)</option>
+          </select>
+        </div>
+        <div class="form-field">
+          <label for="f-appid">App ID</label>
+          <input id="f-appid" type="text" placeholder="App ID" />
+        </div>
+        <div class="form-field">
+          <label for="f-url">URL статистики</label>
+          <input id="f-url" type="text" placeholder="URL (автозаполнение для RuStore)" />
+        </div>
+        <div class="form-field">
+          <label for="f-group-id">Группа</label>
+          <input id="f-group-id" type="text" list="group-list" placeholder="Имя группы для связи приложений" />
+          <datalist id="group-list"></datalist>
+        </div>
+        <div class="form-field">
+          <label>&nbsp;</label>
+          <span class="form-hint">Приложения с одинаковой группой считаются одним приложением на дашборде</span>
+        </div>
+      </div>
+
+      <div class="form-section-title">Дополнительные ссылки</div>
+      <div class="form-grid">
+        <div class="form-field">
+          <label for="f-rustore-url">Страница в RuStore</label>
+          <input id="f-rustore-url" type="text" placeholder="https://www.rustore.ru/catalog/app/..." />
+        </div>
+        <div class="form-field">
+          <label for="f-gp-url">Страница в Google Play</label>
+          <input id="f-gp-url" type="text" placeholder="https://play.google.com/store/apps/details?id=..." />
+        </div>
+        <div class="form-field full-width">
+          <label for="f-repo-url">Репозиторий кода</label>
+          <input id="f-repo-url" type="text" placeholder="https://github.com/..." />
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button id="btn-cancel-edit" class="btn btn-ghost">Отмена</button>
+        <button id="btn-save-edit" class="btn btn-primary">Сохранить</button>
+      </div>
+    </div>
+
+    <!-- Счётчики -->
+    <div class="stats-row" id="stats-row"></div>
+
+    <!-- Таблица приложений -->
+    <div class="table-container">
+      <table id="apps-table" class="apps-table">
+        <thead>
+          <tr>
+            <th>Платформа</th>
+            <th>Название</th>
+            <th>App ID</th>
+            <th>Группа</th>
+            <th>Действия</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <p id="empty-state" class="empty-state hidden">Нет приложений. Добавьте вручную или загрузите из RuStore.</p>
+    </div>
+  </div>
+
+  <script src="apps.js"></script>
+</body>
+</html>

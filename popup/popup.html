@@ -13,47 +13,18 @@
         <h1>App Metrics Harvester</h1>
         <span class="header-sub">Сбор статистики для LLM-анализа</span>
       </div>
-      <button id="btn-dashboard" class="btn-dashboard" title="Открыть полный дашборд">📊</button>
+      <div class="header-btns">
+        <button id="btn-manage-apps" class="btn-icon-header" title="Управление приложениями">⚙️</button>
+        <button id="btn-dashboard" class="btn-icon-header" title="Открыть полный дашборд">📊</button>
+      </div>
     </header>
 
-    <!-- Секция: Приложения -->
+    <!-- Секция: Приложения (read-only) -->
     <section class="section">
       <div class="section-header">
-        <h2>Приложения</h2>
-        <div>
-          <button id="btn-add" class="btn btn-sm btn-accent" title="Добавить приложение">+ Добавить</button>
-          <button id="btn-scan-rustore" class="btn btn-sm btn-ghost" title="Загрузить все приложения из RuStore Console">🔄 Из RuStore</button>
-        </div>
+        <h2>Приложения <span id="app-count" class="app-count"></span></h2>
+        <button id="btn-scan-rustore" class="btn btn-sm btn-ghost" title="Загрузить все приложения из RuStore Console">🔄 Из RuStore</button>
       </div>
-
-      <!-- Форма добавления/редактирования (скрыта по умолчанию) -->
-      <div id="add-form" class="add-form hidden">
-        <input id="f-name" type="text" placeholder="Название (напр. Мой калькулятор)" />
-        <select id="f-platform">
-          <option value="rustore">RuStore</option>
-          <option value="googleplay">Google Play Console</option>
-          <option value="rsya">РСЯ (Yandex Ads)</option>
-        </select>
-        <input id="f-appid" type="text" placeholder="App ID (напр. 2063711093)" />
-        <input id="f-url" type="text" placeholder="URL статистики (автозаполнение)" />
-
-        <button id="btn-toggle-extra" class="btn-toggle-extra" type="button">Доп. поля ▾</button>
-        <div id="extra-fields" class="extra-fields hidden">
-          <input id="f-group-id" type="text" list="group-list" placeholder="Группа (для связи приложений)" />
-          <datalist id="group-list"></datalist>
-          <input id="f-rustore-url" type="text" placeholder="Страница в RuStore (https://www.rustore.ru/catalog/app/...)" />
-          <input id="f-gp-url" type="text" placeholder="Страница в Google Play" />
-          <input id="f-repo-url" type="text" placeholder="Репозиторий (https://github.com/...)" />
-        </div>
-
-        <div class="form-actions">
-          <span id="form-mode" class="form-mode"></span>
-          <button id="btn-cancel-add" class="btn btn-sm btn-ghost">Отмена</button>
-          <button id="btn-save-app" class="btn btn-sm btn-primary">Сохранить</button>
-        </div>
-      </div>
-
-      <!-- Список приложений -->
       <div id="app-list" class="app-list">
         <p class="empty-state">Нет добавленных приложений</p>
       </div>

@@ -112,6 +112,178 @@ function mergeRsyaByBlockType(stored, byBlockType) {
 }
 
 // ═══════════════════════════════════════════════════════════
+//  Auto-register РСЯ apps discovered during collection
+// ═══════════════════════════════════════════════════════════
+
+async function ensureRsyaAppsRegistered(rsyaApps) {
+  if (!rsyaApps || !Array.isArray(rsyaApps)) return { added: 0, total: 0 };
+
+  const existing = await getApps();
+  const existingRsyaIds = new Set(
+    existing.filter((a) => a.platform === 'rsya').map((a) => a.appId)
+  );
+
+  const newApps = rsyaApps
+    .filter((a) => !existingRsyaIds.has(a.appId))
+    .map((a) => ({
+      id: Date.now().toString() + Math.random().toString(36).slice(2, 6),
+      appId: a.appId,
+      name: a.name,
+      platform: 'rsya',
+      url: '',
+      groupId: '',
+      rustoreUrl: '',
+      googlePlayUrl: '',
+      repoUrl: '',
+    }));
+
+  if (newApps.length > 0) {
+    const merged = [...existing, ...newApps];
+    await saveApps(merged);
+    return { added: newApps.length, total: merged.length, apps: merged };
+  }
+
+  return { added: 0, total: existing.length, apps: existing };
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Auto-link: fuzzy name matching across platforms
+// ═══════════════════════════════════════════════════════════
+
+function normalizeName(name) {
+  return (name || '')
+    .toLowerCase()
+    .replace(/[^a-zа-яё0-9\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  const dp = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + (a[i - 1] !== b[j - 1] ? 1 : 0)
+      );
+    }
+  }
+  return dp[m][n];
+}
+
+function nameSimilarity(name1, name2) {
+  const a = normalizeName(name1);
+  const b = normalizeName(name2);
+  if (!a || !b) return 0;
+  if (a === b) return 1.0;
+  if (a.includes(b) || b.includes(a)) return 0.85;
+
+  // Word-based Jaccard similarity
+  const wordsA = new Set(a.split(' ').filter((w) => w.length > 2));
+  const wordsB = new Set(b.split(' ').filter((w) => w.length > 2));
+  const intersection = [...wordsA].filter((w) => wordsB.has(w)).length;
+  const union = new Set([...wordsA, ...wordsB]).size;
+  const jaccard = union > 0 ? intersection / union : 0;
+
+  // Levenshtein similarity
+  const dist = levenshtein(a, b);
+  const maxLen = Math.max(a.length, b.length);
+  const levSim = maxLen > 0 ? 1 - dist / maxLen : 0;
+
+  return Math.max(jaccard, levSim);
+}
+
+async function autoLinkApps() {
+  const apps = await getApps();
+  const THRESHOLD = 0.5;
+
+  // Only consider ungrouped apps
+  const ungrouped = apps.filter((a) => !a.groupId);
+  if (ungrouped.length < 2) {
+    return { success: true, linked: 0, groups: [], message: 'Недостаточно негруппированных приложений' };
+  }
+
+  // Union-Find
+  const parent = {};
+  const find = (x) => {
+    if (parent[x] !== x) parent[x] = find(parent[x]);
+    return parent[x];
+  };
+  const union = (a, b) => { parent[find(a)] = find(b); };
+
+  for (const app of ungrouped) parent[app.id] = app.id;
+
+  // Compare all pairs from different platforms
+  const pairs = [];
+  for (let i = 0; i < ungrouped.length; i++) {
+    for (let j = i + 1; j < ungrouped.length; j++) {
+      if (ungrouped[i].platform === ungrouped[j].platform) continue;
+      const sim = nameSimilarity(ungrouped[i].name, ungrouped[j].name);
+      if (sim >= THRESHOLD) {
+        pairs.push({ i, j, sim });
+      }
+    }
+  }
+
+  if (pairs.length === 0) {
+    return { success: true, linked: 0, groups: [], message: 'Похожие приложения не найдены (порог: ' + (THRESHOLD * 100) + '%)' };
+  }
+
+  pairs.sort((a, b) => b.sim - a.sim);
+  for (const { i, j } of pairs) union(ungrouped[i].id, ungrouped[j].id);
+
+  // Build groups
+  const groupsMap = {};
+  for (const app of ungrouped) {
+    const root = find(app.id);
+    if (!groupsMap[root]) groupsMap[root] = [];
+    groupsMap[root].push(app);
+  }
+
+  let linkCount = 0;
+  const linkedGroups = [];
+
+  for (const [, members] of Object.entries(groupsMap)) {
+    const platforms = new Set(members.map((a) => a.platform));
+    if (platforms.size < 2) continue;
+
+    // Use the shortest name as groupId
+    const sorted = [...members].sort((a, b) => a.name.length - b.name.length);
+    const groupId = sorted[0].name;
+
+    for (const member of members) {
+      const idx = apps.findIndex((a) => a.id === member.id);
+      if (idx >= 0) {
+        apps[idx].groupId = groupId;
+        linkCount++;
+      }
+    }
+
+    linkedGroups.push({
+      groupId,
+      apps: members.map((a) => ({ name: a.name, platform: a.platform })),
+    });
+  }
+
+  if (linkCount > 0) await saveApps(apps);
+
+  return {
+    success: true,
+    linked: linkCount,
+    groups: linkedGroups,
+    message: linkCount > 0
+      ? `Связано ${linkCount} приложений в ${linkedGroups.length} групп(ы)`
+      : 'Нет подходящих пар для связывания',
+  };
+}
+
+// ═══════════════════════════════════════════════════════════
 //  Таб-менеджмент: открытие, ожидание загрузки, отправка сообщения
 // ═══════════════════════════════════════════════════════════
 
@@ -279,6 +451,8 @@ async function collectAll() {
           rsyaByBlock = mergeRsyaByBlockType(rsyaByBlock, rsyaResult.data.byBlockType);
           await saveRsyaByBlockType(rsyaByBlock);
         }
+        // Auto-register РСЯ apps in the apps list
+        await ensureRsyaAppsRegistered(rsyaResult.data.apps);
         results.push({
           app: `${rsyaResult.data.apps.length} РСЯ приложений`,
           success: true,
@@ -710,6 +884,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
                   rsyaByBlock = mergeRsyaByBlockType(rsyaByBlock, result.data.byBlockType);
                   await saveRsyaByBlockType(rsyaByBlock);
                 }
+                // Auto-register РСЯ apps
+                await ensureRsyaAppsRegistered(result.data.apps);
               }
               sendResponse(result || { success: false, error: 'нет ответа от content script' });
             } catch (e) {
@@ -829,6 +1005,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
     case 'getRsyaToken': {
       getRsyaToken().then(sendResponse);
+      return true;
+    }
+
+    // ── Автосвязывание приложений ──
+    case 'autoLinkApps': {
+      autoLinkApps().then(sendResponse);
       return true;
     }
 

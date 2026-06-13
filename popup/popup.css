@@ -34,6 +34,21 @@ body {
   opacity: 0.8;
   margin-top: 2px;
 }
+.header-btns {
+  display: flex;
+  gap: 4px;
+}
+.btn-icon-header {
+  background: rgba(255,255,255,0.15);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 4px 8px;
+  transition: background 0.15s;
+  line-height: 1;
+}
+.btn-icon-header:hover { background: rgba(255,255,255,0.25); }
 
 /* ── Sections ── */
 .section { padding: 10px 14px; border-bottom: 1px solid #e8e8f0; }
@@ -53,6 +68,7 @@ body {
   letter-spacing: 0.5px;
   color: #6c6c80;
 }
+.app-count { font-weight: 400; color: #aaa; font-size: 11px; }
 
 /* ── Buttons ── */
 .btn {
@@ -78,86 +94,20 @@ body {
 .btn-ghost:hover:not(:disabled) { background: #eef; }
 .btn-danger { background: transparent; color: #e63946; border: 1px solid #f5c6cb; }
 .btn-danger:hover:not(:disabled) { background: #fff5f5; }
-.btn-icon {
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 2px 4px;
-  color: #999;
-  font-size: 16px;
-  line-height: 1;
-  border-radius: 4px;
-}
-.btn-icon:hover { color: #e63946; background: #fff0f0; }
-.btn-icon.btn-edit { font-size: 13px; color: #4361ee; }
-.btn-icon.btn-edit:hover { color: #3a56d4; background: #eef; }
 
-/* ── Add/Edit form ── */
-.add-form {
-  background: #fff;
-  border: 1px solid #e0e0f0;
-  border-radius: 8px;
-  padding: 10px;
-  margin-bottom: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.add-form input,
-.add-form select {
-  padding: 6px 8px;
-  border: 1px solid #d0d0e0;
-  border-radius: 5px;
-  font-size: 12px;
-  outline: none;
-  transition: border-color 0.15s;
-}
-.add-form input:focus,
-.add-form select:focus {
-  border-color: #4361ee;
-}
-.form-actions {
-  display: flex;
-  gap: 6px;
-  justify-content: flex-end;
-  align-items: center;
-}
-.form-mode {
-  font-size: 11px;
-  color: #4361ee;
-  font-weight: 600;
-  flex: 1;
-}
-.btn-toggle-extra {
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: #4361ee;
-  font-size: 11px;
-  padding: 2px 0;
-  text-align: left;
-}
-.btn-toggle-extra:hover { text-decoration: underline; }
-.extra-fields {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.extra-fields input::placeholder { color: #bbb; font-size: 11px; }
-
-/* ── App list ── */
+/* ── App list (read-only) ── */
 .app-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  max-height: 180px;
+  gap: 3px;
+  max-height: 200px;
   overflow-y: auto;
 }
 .app-item {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 8px;
+  padding: 5px 8px;
   background: #fff;
   border: 1px solid #e8e8f0;
   border-radius: 6px;
@@ -173,14 +123,13 @@ body {
 }
 .platform-badge.rustore { background: #e63946; }
 .platform-badge.googleplay { background: #34a853; }
-.platform-badge.rsya { background: #ffcc00; color: #333; }
+.platform-badge.rsya { background: #f0a500; color: #333; }
 .app-item .app-name {
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.app-item .app-id { color: #999; font-size: 11px; flex-shrink: 0; }
 .group-tag { font-size: 11px; flex-shrink: 0; }
 
 /* ── Collect row ── */
@@ -227,16 +176,3 @@ body {
 }
 .token-input:focus { border-color: #4361ee; }
 .token-input::placeholder { color: #bbb; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-
-/* ── Dashboard button ── */
-.btn-dashboard {
-  background: rgba(255,255,255,0.15);
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 18px;
-  padding: 4px 8px;
-  transition: background 0.15s;
-  flex-shrink: 0;
-}
-.btn-dashboard:hover { background: rgba(255,255,255,0.25); }
