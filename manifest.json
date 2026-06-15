@@ -40,6 +40,11 @@
       "run_at": "document_idle"
     },
     {
+      "matches": ["*://play.google.com/console/*"],
+      "js": ["content/googleplay-apps.js"],
+      "run_at": "document_idle"
+    },
+    {
       "matches": ["*://partner.yandex.ru/*"],
       "js": ["content/yandex-ads.js"],
       "run_at": "document_idle"

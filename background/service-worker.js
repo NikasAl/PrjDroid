@@ -7,6 +7,7 @@ const KEYS = {
   STATUS: 'amh_collectionStatus',
   RSYA_TOKEN: 'amh_rsyaToken',
   RSYA_BY_BLOCK: 'amh_rsyaByBlockType',
+  GP_OVERVIEW: 'amh_gpOverview',
 };
 
 // ═══════════════════════════════════════════════════════════
@@ -937,6 +938,75 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     case 'getStatus':
       getStatus().then(sendResponse);
       return true;
+
+    case 'scanGooglePlayApps': {
+      (async () => {
+        try {
+          // Открыть страницу списка приложений Google Play Console
+          const tab = await chrome.tabs.create({
+            url: 'https://play.google.com/console/u/0/app-list',
+            active: true,
+          });
+          const tabId = tab.id;
+          await waitForTabLoad(tabId);
+          // SPA — ждём рендеринг Angular
+          await new Promise((r) => setTimeout(r, 4000));
+
+          const resp = await sendToTab(tabId, { action: 'scanGooglePlayApps' });
+          if (!resp?.success) {
+            sendResponse({ success: false, error: resp?.error || 'Скан не вернул данные' });
+            return;
+          }
+
+          // Регистрация новых приложений
+          const existing = await getApps();
+          const existingGpIds = new Set(
+            existing.filter((a) => a.platform === 'googleplay').map((a) => a.appId)
+          );
+
+          const newApps = resp.apps
+            .filter((a) => a.appId && !existingGpIds.has(a.appId))
+            .map((a) => ({
+              id: Date.now().toString() + Math.random().toString(36).slice(2, 6),
+              ...a,
+            }));
+
+          const merged = [...existing, ...newApps];
+          await saveApps(merged);
+
+          // Сохранить обзорные метрики (30-дневные снепшоты)
+          const overview = {};
+          for (const app of resp.apps) {
+            if (app.appId && app.overview) {
+              overview[app.appId] = {
+                ...app.overview,
+                name: app.name,
+                status: app.status,
+                lastUpdate: app.lastUpdate,
+                iconUrl: app.iconUrl,
+                googlePlayUrl: app.googlePlayUrl,
+                fetchedAt: new Date().toISOString(),
+              };
+            }
+          }
+          if (Object.keys(overview).length > 0) {
+            await chrome.storage.local.set({ [KEYS.GP_OVERVIEW]: overview });
+          }
+
+          sendResponse({
+            success: true,
+            added: newApps.length,
+            total: resp.apps.length,
+            apps: merged,
+            overview,
+          });
+        } catch (e) {
+          sendResponse({ success: false, error: e.message });
+        }
+        // Вкладку НЕ закрываем
+      })();
+      return true;
+    }
 
     case 'scanRuStoreApps': {
       (async () => {

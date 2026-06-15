@@ -12,6 +12,7 @@ const el = {
   appCount: $('#app-count'),
   btnManageApps: $('#btn-manage-apps'),
   btnScanRuStore: $('#btn-scan-rustore'),
+  btnScanGooglePlay: $('#btn-scan-googleplay'),
   btnCollectAll: $('#btn-collect-all'),
   btnCollectCurrent: $('#btn-collect-current'),
   statusBar: $('#status-bar'),
@@ -64,6 +65,7 @@ function bindEvents() {
   el.btnManageApps.addEventListener('click', () => {
     chrome.tabs.create({ url: chrome.runtime.getURL('apps/apps.html') });
   });
+  el.btnScanGooglePlay.addEventListener('click', scanGooglePlayApps);
   el.btnScanRuStore.addEventListener('click', scanRuStoreApps);
   el.btnCollectAll.addEventListener('click', collectAll);
   el.btnCollectCurrent.addEventListener('click', collectCurrentPage);
@@ -112,6 +114,37 @@ function renderAppList() {
     </div>`;
     })
     .join('');
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Сканирование Google Play
+// ═══════════════════════════════════════════════════════════
+
+async function scanGooglePlayApps() {
+  el.btnScanGooglePlay.disabled = true;
+  el.btnScanGooglePlay.textContent = 'Загрузка...';
+  showStatus('collecting', 'Открываем Google Play Console...');
+
+  try {
+    const result = await sendMsg('scanGooglePlayApps');
+    if (result.success) {
+      apps = result.apps;
+      renderAppList();
+      updateButtons();
+      if (result.added > 0) {
+        showStatus('done', `GP: найдено ${result.total}, добавлено ${result.added} новых`);
+      } else {
+        showStatus('done', `GP: найдено ${result.total} приложений — все уже в списке`);
+      }
+    } else {
+      showStatus('error', result.error || 'Ошибка сканирования Google Play');
+    }
+  } catch (e) {
+    showStatus('error', e.message);
+  } finally {
+    el.btnScanGooglePlay.disabled = false;
+    el.btnScanGooglePlay.textContent = '📱 Из Google Play';
+  }
 }
 
 // ═══════════════════════════════════════════════════════════
