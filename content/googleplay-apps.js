@@ -33,6 +33,7 @@
     'Показать',
     'Развернуть',
     'Свернуть',
+    'Просмотреть',
     'по сравнению с предыдущими 30 днями',
   ]);
 
@@ -47,9 +48,11 @@
     let node;
     while ((node = walker.nextNode())) {
       const t = node.textContent.trim();
-      if (t && !ICON_TEXTS.has(t) && !SKIP_TEXTS.has(t)) {
-        result.push(t);
-      }
+      if (!t) continue;
+      if (ICON_TEXTS.has(t) || SKIP_TEXTS.has(t)) continue;
+      // Пропускать текст внутри кнопок (aria-label рендерится как текстовый узел)
+      if (node.parentElement?.closest('button')) continue;
+      result.push(t);
     }
     return result;
   }
