@@ -126,7 +126,31 @@ async function scanGooglePlayApps() {
   showStatus('collecting', 'Открываем Google Play Console...');
 
   try {
-    const result = await sendMsg('scanGooglePlayApps');
+    let result = await sendMsg('scanGooglePlayApps');
+
+    // Если URL не сохранён — спрашиваем у пользователя
+    if (result && result.needUrl) {
+      el.btnScanGooglePlay.disabled = false;
+      el.btnScanGooglePlay.textContent = '📱 Из Google Play';
+
+      const url = prompt(
+        'Вставьте URL страницы списка приложений Google Play Console.\n\n' +
+        'Пример:\nhttps://play.google.com/console/u/0/developers/123456789/app-list',
+        'https://play.google.com/console/u/0/developers/'
+      );
+      if (!url || !url.includes('developers') || !url.includes('app-list')) {
+        showStatus('error', 'Некорректный URL');
+        return;
+      }
+
+      await sendMsg('saveGpAppListUrl', { url });
+
+      // Повторный запуск с сохранённым URL
+      el.btnScanGooglePlay.disabled = true;
+      el.btnScanGooglePlay.textContent = 'Загрузка...';
+      result = await sendMsg('scanGooglePlayApps');
+    }
+
     if (result.success) {
       apps = result.apps;
       renderAppList();

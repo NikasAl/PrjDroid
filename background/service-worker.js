@@ -8,6 +8,7 @@ const KEYS = {
   RSYA_TOKEN: 'amh_rsyaToken',
   RSYA_BY_BLOCK: 'amh_rsyaByBlockType',
   GP_OVERVIEW: 'amh_gpOverview',
+  GP_APP_LIST_URL: 'amh_gpAppListUrl',
 };
 
 // ═══════════════════════════════════════════════════════════
@@ -935,6 +936,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       });
       return true;
 
+    case 'saveGpAppListUrl':
+      chrome.storage.local.set({ [KEYS.GP_APP_LIST_URL]: msg.data.url }).then(() => {
+        sendResponse({ success: true });
+      });
+      return true;
+
+    case 'getGpAppListUrl':
+      chrome.storage.local.get(KEYS.GP_APP_LIST_URL).then((r) => {
+        sendResponse({ url: r[KEYS.GP_APP_LIST_URL] || '' });
+      });
+      return true;
+
     case 'getStatus':
       getStatus().then(sendResponse);
       return true;
@@ -942,9 +955,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     case 'scanGooglePlayApps': {
       (async () => {
         try {
-          // Открыть страницу списка приложений Google Play Console
+          // Проверяем сохранённый URL
+          const stored = (await chrome.storage.local.get(KEYS.GP_APP_LIST_URL))[KEYS.GP_APP_LIST_URL];
+          if (!stored) {
+            sendResponse({ success: false, needUrl: true });
+            return;
+          }
+
           const tab = await chrome.tabs.create({
-            url: 'https://play.google.com/console/u/0/app-list',
+            url: stored,
             active: true,
           });
           const tabId = tab.id;
