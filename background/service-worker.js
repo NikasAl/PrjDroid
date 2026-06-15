@@ -969,7 +969,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           const tabId = tab.id;
           await waitForTabLoad(tabId);
           // SPA — ждём рендеринг Angular
-          await new Promise((r) => setTimeout(r, 4000));
+          await new Promise((r) => setTimeout(r, 5000));
 
           const resp = await sendToTab(tabId, { action: 'scanGooglePlayApps' });
           if (!resp?.success) {
